@@ -130,15 +130,31 @@ calc_vol_of_vol(lookback) =>
     vol_of_vol
 
 calc_garch_forecast() =>
-    returns = math.log(close / close[1])
+    // Safe return calculation
+    returns = close[1] > 0 ? math.log(close / close[1]) : 0.0
     returns_sq = returns * returns
     alpha = 0.10
     beta = 0.85
     var float cond_var = na
-    if na(cond_var)
-        cond_var := ta.variance(returns, 20)
-    cond_var := (1 - alpha - beta) * ta.variance(returns, 20) + alpha * returns_sq[1] + beta * cond_var[1]
-    forecast_vol = math.sqrt(cond_var) * math.sqrt(252)
+
+    // Initialize conditional variance
+    if na(cond_var) or bar_index < 25
+        base_var = ta.variance(returns, 20)
+        cond_var := na(base_var) or base_var <= 0 ? 0.0001 : base_var
+    else
+        // GARCH(1,1) update with safety checks
+        base_var = ta.variance(returns, 20)
+        base_var := na(base_var) or base_var <= 0 ? 0.0001 : base_var
+        lag_returns_sq = na(returns_sq[1]) ? 0.0 : returns_sq[1]
+        lag_cond_var = na(cond_var[1]) ? base_var : cond_var[1]
+
+        cond_var := (1 - alpha - beta) * base_var + alpha * lag_returns_sq + beta * lag_cond_var
+
+        // Ensure positive variance
+        cond_var := math.max(cond_var, 0.0001)
+
+    // Calculate annualized volatility
+    forecast_vol = math.sqrt(math.max(cond_var, 0.0001)) * math.sqrt(252)
     forecast_vol
 
 vol_fast = calc_realized_vol(vol_lookback_fast)
@@ -163,15 +179,31 @@ vol_clustering = calc_vol_clustering()
 // ============================================================================
 
 calc_cusum_statistic() =>
-    returns = ta.change(close) / close[1]
-    mean_return = ta.sma(returns, 100)
-    std_return = ta.stdev(returns, 100)
-    z_score = (returns - mean_return) / std_return
-    var float cusum_pos = 0.0
-    var float cusum_neg = 0.0
-    cusum_pos := math.max(0, cusum_pos[1] + z_score - cusum_drift)
-    cusum_neg := math.max(0, cusum_neg[1] - z_score - cusum_drift)
-    [cusum_pos, cusum_neg]
+    // Safe return calculation
+    returns = close[1] > 0 ? ta.change(close) / close[1] : 0.0
+
+    // Need at least 100 bars for calculation
+    if bar_index < 100
+        [0.0, 0.0]
+    else
+        mean_return = ta.sma(returns, 100)
+        std_return = ta.stdev(returns, 100)
+
+        // Prevent division by zero
+        std_return := na(std_return) or std_return <= 0 ? 0.01 : std_return
+
+        // Calculate z-score
+        z_score = (returns - mean_return) / std_return
+        z_score := na(z_score) ? 0.0 : z_score
+
+        // CUSUM statistics
+        var float cusum_pos = 0.0
+        var float cusum_neg = 0.0
+
+        cusum_pos := math.max(0, cusum_pos[1] + z_score - cusum_drift)
+        cusum_neg := math.max(0, cusum_neg[1] - z_score - cusum_drift)
+
+        [cusum_pos, cusum_neg]
 
 [cusum_positive, cusum_negative] = calc_cusum_statistic()
 changepoint_detected = cusum_positive > cusum_threshold_adaptive or cusum_negative > cusum_threshold_adaptive
