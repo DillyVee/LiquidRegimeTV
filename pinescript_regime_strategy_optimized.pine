@@ -1,0 +1,491 @@
+//@version=5
+strategy("LiquidUI - FA-HMM Optimized Regime Strategy",
+         shorttitle="FA-HMM Optimized",
+         overlay=true,
+         initial_capital=100000,
+         default_qty_type=strategy.percent_of_equity,
+         commission_type=strategy.commission.percent,
+         commission_value=0.1,
+         slippage=2)
+
+// ============================================================================
+// OPTIMIZATION PRESETS
+// ============================================================================
+
+preset_mode = input.string("Custom", "Parameter Preset", options=["Conservative", "Moderate", "Aggressive", "Custom"], group="Optimization")
+enable_adaptive = input.bool(true, "Enable Adaptive Parameters", tooltip="Auto-tune parameters based on market conditions", group="Optimization")
+
+// ============================================================================
+// OPTIMIZABLE PARAMETERS
+// ============================================================================
+// TradingView Optimization Ranges:
+// Vol Fast: 5-20 (step 5)
+// Vol Med: 10-40 (step 10)
+// Vol Slow: 30-100 (step 20)
+// CUSUM Threshold: 2.0-4.0 (step 0.5)
+// Min Regime Duration: 3-15 (step 3)
+// Confidence Threshold: 0.55-0.75 (step 0.05)
+
+// Multi-Timeframe Volatility Settings
+vol_lookback_fast_input = input.int(10, "Vol Fast Period", minval=5, maxval=50, step=5, group="Vol Analysis", inline="vol1")
+vol_lookback_med_input = input.int(20, "Vol Medium Period", minval=10, maxval=100, step=5, group="Vol Analysis", inline="vol2")
+vol_lookback_slow_input = input.int(60, "Vol Slow Period", minval=20, maxval=200, step=10, group="Vol Analysis", inline="vol3")
+
+// Apply preset overrides
+vol_lookback_fast = preset_mode == "Conservative" ? 15 : preset_mode == "Moderate" ? 10 : preset_mode == "Aggressive" ? 5 : vol_lookback_fast_input
+vol_lookback_med = preset_mode == "Conservative" ? 30 : preset_mode == "Moderate" ? 20 : preset_mode == "Aggressive" ? 15 : vol_lookback_med_input
+vol_lookback_slow = preset_mode == "Conservative" ? 80 : preset_mode == "Moderate" ? 60 : preset_mode == "Aggressive" ? 40 : vol_lookback_slow_input
+
+// Regime Thresholds (OPTIMIZE THESE)
+vol_low_threshold_input = input.float(0.10, "Low Vol Threshold", minval=0.05, maxval=0.30, step=0.01, group="Regime Thresholds")
+vol_high_threshold_input = input.float(0.25, "High Vol Threshold", minval=0.15, maxval=0.50, step=0.01, group="Regime Thresholds")
+vol_crisis_threshold_input = input.float(0.50, "Crisis Vol Threshold", minval=0.30, maxval=1.00, step=0.05, group="Regime Thresholds")
+
+vol_low_threshold = preset_mode == "Conservative" ? 0.12 : preset_mode == "Moderate" ? 0.10 : preset_mode == "Aggressive" ? 0.08 : vol_low_threshold_input
+vol_high_threshold = preset_mode == "Conservative" ? 0.30 : preset_mode == "Moderate" ? 0.25 : preset_mode == "Aggressive" ? 0.20 : vol_high_threshold_input
+vol_crisis_threshold = preset_mode == "Conservative" ? 0.60 : preset_mode == "Moderate" ? 0.50 : preset_mode == "Aggressive" ? 0.40 : vol_crisis_threshold_input
+
+// Change-Point Detection (OPTIMIZE THESE)
+cusum_threshold_input = input.float(3.0, "CUSUM Threshold", minval=1.0, maxval=5.0, step=0.5, group="Change-Point Detection", tooltip="Lower = more sensitive")
+cusum_drift_input = input.float(0.5, "CUSUM Drift", minval=0.1, maxval=2.0, step=0.1, group="Change-Point Detection")
+
+cusum_threshold = preset_mode == "Conservative" ? 3.5 : preset_mode == "Moderate" ? 3.0 : preset_mode == "Aggressive" ? 2.5 : cusum_threshold_input
+cusum_drift = preset_mode == "Conservative" ? 0.6 : preset_mode == "Moderate" ? 0.5 : preset_mode == "Aggressive" ? 0.4 : cusum_drift_input
+
+// HMM Transition Parameters (OPTIMIZE THESE)
+min_regime_duration_input = input.int(5, "Min Regime Duration", minval=1, maxval=50, step=2, group="HMM Transitions", tooltip="Higher = more stable regimes")
+transition_smoothing_input = input.float(0.15, "Transition Smoothing", minval=0.05, maxval=0.50, step=0.05, group="HMM Transitions")
+
+min_regime_duration = preset_mode == "Conservative" ? 10 : preset_mode == "Moderate" ? 5 : preset_mode == "Aggressive" ? 3 : min_regime_duration_input
+transition_smoothing = preset_mode == "Conservative" ? 0.25 : preset_mode == "Moderate" ? 0.15 : preset_mode == "Aggressive" ? 0.10 : transition_smoothing_input
+
+// Trading Thresholds (OPTIMIZE THESE)
+confidence_threshold_input = input.float(0.65, "Confidence Threshold", minval=0.50, maxval=0.85, step=0.05, group="Trading Filters", tooltip="Min confidence to enter")
+stability_threshold_input = input.float(0.60, "Stability Threshold", minval=0.50, maxval=0.80, step=0.05, group="Trading Filters", tooltip="Min stability to enter")
+exit_confidence_input = input.float(0.40, "Exit Confidence", minval=0.30, maxval=0.60, step=0.05, group="Trading Filters")
+
+confidence_threshold = preset_mode == "Conservative" ? 0.70 : preset_mode == "Moderate" ? 0.65 : preset_mode == "Aggressive" ? 0.60 : confidence_threshold_input
+stability_threshold = preset_mode == "Conservative" ? 0.65 : preset_mode == "Moderate" ? 0.60 : preset_mode == "Aggressive" ? 0.55 : stability_threshold_input
+exit_confidence = preset_mode == "Conservative" ? 0.45 : preset_mode == "Moderate" ? 0.40 : preset_mode == "Aggressive" ? 0.35 : exit_confidence_input
+
+// Factor Inputs
+use_volume_factor = input.bool(true, "Use Volume Factor", group="Factor Inputs")
+use_momentum_factor = input.bool(true, "Use Momentum Factor", group="Factor Inputs")
+use_microstructure = input.bool(true, "Use Microstructure", group="Factor Inputs")
+
+// Position Sizing (OPTIMIZE THESE)
+base_position_size = input.float(100.0, "Base Position (%)", minval=50, maxval=100, step=10, group="Position Sizing")
+max_leverage_input = input.float(2.0, "Max Leverage", minval=1.0, maxval=3.0, step=0.25, group="Position Sizing")
+min_position_size = input.float(10.0, "Min Position (%)", minval=5, maxval=50, step=5, group="Position Sizing")
+
+max_leverage = preset_mode == "Conservative" ? 1.5 : preset_mode == "Moderate" ? 2.0 : preset_mode == "Aggressive" ? 2.5 : max_leverage_input
+
+// Display
+show_regime_bg = input.bool(true, "Show Regime Background", group="Display")
+show_changepoints = input.bool(true, "Show Change Points", group="Display")
+show_info_table = input.bool(true, "Show Info Table", group="Display")
+show_perf_metrics = input.bool(true, "Show Performance Metrics", group="Display")
+
+// ============================================================================
+// ADAPTIVE PARAMETER TUNING
+// ============================================================================
+
+// Market regime for parameter adaptation
+calc_market_regime() =>
+    // Assess overall market conditions
+    returns_20 = ta.roc(close, 20)
+    vol_20 = ta.stdev(ta.change(close) / close[1], 20) * math.sqrt(252)
+
+    // Trending vs Ranging
+    is_trending = math.abs(returns_20) > 0.10
+    is_high_vol = vol_20 > 0.25
+
+    // Return regime classification
+    regime = is_trending and not is_high_vol ? "trending" : is_high_vol ? "volatile" : "ranging"
+    regime
+
+market_condition = calc_market_regime()
+
+// Adaptive adjustments (only if enabled)
+adaptive_cusum_mult = enable_adaptive ? (market_condition == "volatile" ? 0.85 : market_condition == "trending" ? 1.15 : 1.0) : 1.0
+adaptive_min_duration_mult = enable_adaptive ? (market_condition == "volatile" ? 0.7 : market_condition == "ranging" ? 1.3 : 1.0) : 1.0
+
+// Apply adaptive adjustments
+cusum_threshold_adaptive = cusum_threshold * adaptive_cusum_mult
+min_regime_duration_adaptive = math.round(min_regime_duration * adaptive_min_duration_mult)
+
+// ============================================================================
+// MULTI-TIMEFRAME VOLATILITY ANALYSIS (GARCH-Inspired)
+// ============================================================================
+
+calc_realized_vol(lookback) =>
+    returns = math.log(close / close[1])
+    vol = ta.stdev(returns, lookback) * math.sqrt(252)
+    vol
+
+calc_vol_of_vol(lookback) =>
+    returns = math.log(close / close[1])
+    vol = ta.stdev(returns, lookback)
+    vol_of_vol = ta.stdev(vol, lookback)
+    vol_of_vol
+
+calc_garch_forecast() =>
+    returns = math.log(close / close[1])
+    returns_sq = returns * returns
+    alpha = 0.10
+    beta = 0.85
+    var float cond_var = na
+    if na(cond_var)
+        cond_var := ta.variance(returns, 20)
+    cond_var := (1 - alpha - beta) * ta.variance(returns, 20) + alpha * returns_sq[1] + beta * cond_var[1]
+    forecast_vol = math.sqrt(cond_var) * math.sqrt(252)
+    forecast_vol
+
+vol_fast = calc_realized_vol(vol_lookback_fast)
+vol_med = calc_realized_vol(vol_lookback_med)
+vol_slow = calc_realized_vol(vol_lookback_slow)
+vol_of_vol = calc_vol_of_vol(20)
+garch_vol = calc_garch_forecast()
+
+vol_regime = garch_vol < vol_low_threshold ? 1 : garch_vol < vol_high_threshold ? 2 : garch_vol < vol_crisis_threshold ? 3 : 4
+
+calc_vol_clustering() =>
+    returns = math.log(close / close[1])
+    returns_sq = returns * returns
+    returns_sq_lag = returns_sq[1]
+    correlation = ta.correlation(returns_sq, returns_sq_lag, 20)
+    correlation
+
+vol_clustering = calc_vol_clustering()
+
+// ============================================================================
+// CHANGE-POINT DETECTION (CUSUM Algorithm)
+// ============================================================================
+
+calc_cusum_statistic() =>
+    returns = ta.change(close) / close[1]
+    mean_return = ta.sma(returns, 100)
+    std_return = ta.stdev(returns, 100)
+    z_score = (returns - mean_return) / std_return
+    var float cusum_pos = 0.0
+    var float cusum_neg = 0.0
+    cusum_pos := math.max(0, cusum_pos[1] + z_score - cusum_drift)
+    cusum_neg := math.max(0, cusum_neg[1] - z_score - cusum_drift)
+    [cusum_pos, cusum_neg]
+
+[cusum_positive, cusum_negative] = calc_cusum_statistic()
+changepoint_detected = cusum_positive > cusum_threshold_adaptive or cusum_negative > cusum_threshold_adaptive
+
+var int bars_since_changepoint = 0
+if changepoint_detected
+    bars_since_changepoint := 0
+else
+    bars_since_changepoint += 1
+
+// ============================================================================
+// FACTOR-AUGMENTED FEATURES
+// ============================================================================
+
+mom_fast = ta.roc(close, 10)
+mom_med = ta.roc(close, 20)
+mom_slow = ta.roc(close, 60)
+mom_score = use_momentum_factor ? (mom_fast + mom_med + mom_slow) / 3.0 : 0.0
+
+volume_ma = ta.sma(volume, 20)
+volume_ratio = volume / volume_ma
+volume_factor = use_volume_factor ? math.log(volume_ratio) : 0.0
+
+range_expansion = (high - low) / close
+range_ma = ta.sma(range_expansion, 20)
+microstructure_signal = use_microstructure ? range_expansion / range_ma - 1.0 : 0.0
+
+price_trend_fast = ta.ema(close, 20)
+price_trend_slow = ta.ema(close, 50)
+trend_alignment = (price_trend_fast - price_trend_slow) / price_trend_slow
+
+rsi_val = ta.rsi(close, 14)
+rsi_regime = rsi_val > 70 ? 1 : rsi_val > 50 ? 0.5 : rsi_val > 30 ? 0 : -0.5
+
+var float running_max = close
+running_max := math.max(close, running_max)
+drawdown = (close - running_max) / running_max
+
+// ============================================================================
+// MULTI-EMISSION REGIME SCORING (HMM-Inspired)
+// ============================================================================
+
+score_bull_emissions() =>
+    score = 0.0
+    if vol_regime == 1
+        score += 3.0
+    else if vol_regime == 2
+        score += 1.0
+    if mom_score > 0.05
+        score += 3.0
+    else if mom_score > 0
+        score += 1.0
+    if trend_alignment > 0.05
+        score += 2.0
+    if drawdown > -0.05
+        score += 2.0
+    if volume_factor > 0
+        score += 1.0
+    score
+
+score_bear_emissions() =>
+    score = 0.0
+    if vol_regime >= 2
+        score += 2.0
+    if mom_score < -0.05
+        score += 3.0
+    else if mom_score < 0
+        score += 1.0
+    if trend_alignment < -0.05
+        score += 2.0
+    if drawdown < -0.10
+        score += 3.0
+    score
+
+score_highvol_emissions() =>
+    score = 0.0
+    if vol_regime == 3
+        score += 4.0
+    else if vol_regime == 2
+        score += 2.0
+    if vol_clustering > 0.3
+        score += 2.0
+    if microstructure_signal > 0.5
+        score += 2.0
+    if math.abs(mom_score) < 0.05
+        score += 1.0
+    score
+
+score_lowvol_emissions() =>
+    score = 0.0
+    if vol_regime == 1
+        score += 4.0
+    if vol_of_vol < 0.05
+        score += 2.0
+    if math.abs(mom_score) < 0.03
+        score += 2.0
+    if microstructure_signal < 0
+        score += 1.0
+    score
+
+score_crisis_emissions() =>
+    score = 0.0
+    if vol_regime == 4
+        score += 5.0
+    if vol_of_vol > 0.10
+        score += 2.0
+    if drawdown < -0.20
+        score += 3.0
+    if mom_score < -0.30
+        score += 3.0
+    if volume_factor > 1.0
+        score += 2.0
+    score
+
+bull_emissions = score_bull_emissions()
+bear_emissions = score_bear_emissions()
+highvol_emissions = score_highvol_emissions()
+lowvol_emissions = score_lowvol_emissions()
+crisis_emissions = score_crisis_emissions()
+
+total_emissions = bull_emissions + bear_emissions + highvol_emissions + lowvol_emissions + crisis_emissions
+bull_prob = total_emissions > 0 ? bull_emissions / total_emissions : 0.2
+bear_prob = total_emissions > 0 ? bear_emissions / total_emissions : 0.2
+highvol_prob = total_emissions > 0 ? highvol_emissions / total_emissions : 0.2
+lowvol_prob = total_emissions > 0 ? lowvol_emissions / total_emissions : 0.2
+crisis_prob = total_emissions > 0 ? crisis_emissions / total_emissions : 0.2
+
+// ============================================================================
+// HMM-INSPIRED ADAPTIVE TRANSITION MATRIX
+// ============================================================================
+
+var int current_regime = 1
+var int regime_duration = 0
+var array<float> regime_history = array.new_float(100, 0)
+
+raw_regime = bull_prob >= bear_prob and bull_prob >= highvol_prob and bull_prob >= lowvol_prob and bull_prob >= crisis_prob ? 1 : bear_prob >= highvol_prob and bear_prob >= lowvol_prob and bear_prob >= crisis_prob ? 2 : highvol_prob >= lowvol_prob and highvol_prob >= crisis_prob ? 3 : lowvol_prob >= crisis_prob ? 4 : 5
+
+transition_barrier = transition_smoothing * 0.10
+regime_switch_score = raw_regime == 1 ? bull_prob : raw_regime == 2 ? bear_prob : raw_regime == 3 ? highvol_prob : raw_regime == 4 ? lowvol_prob : crisis_prob
+current_regime_score = current_regime == 1 ? bull_prob : current_regime == 2 ? bear_prob : current_regime == 3 ? highvol_prob : current_regime == 4 ? lowvol_prob : crisis_prob
+
+regime_should_switch = regime_switch_score > current_regime_score + transition_barrier and regime_duration >= min_regime_duration_adaptive
+
+if regime_should_switch or changepoint_detected
+    current_regime := raw_regime
+    regime_duration := 0
+else
+    regime_duration += 1
+
+array.push(regime_history, current_regime)
+array.shift(regime_history)
+
+regime_stability = math.min(0.95, 0.50 + regime_duration / 100.0)
+
+calc_confidence() =>
+    probs = array.from(bull_prob, bear_prob, highvol_prob, lowvol_prob, crisis_prob)
+    entropy = 0.0
+    for prob in probs
+        if prob > 0.001
+            entropy := entropy - prob * math.log(prob)
+    max_entropy = math.log(5.0)
+    confidence = 1.0 - (entropy / max_entropy)
+    confidence
+
+confidence = calc_confidence()
+
+// ============================================================================
+// DYNAMIC POSITION SIZING
+// ============================================================================
+
+regime_base_size(r) =>
+    r == 1 ? 1.2 : r == 2 ? 0.5 : r == 3 ? 0.6 : r == 4 ? 1.0 : 0.2
+
+base_size = regime_base_size(current_regime)
+confidence_adj = base_size * confidence + 1.0 * (1.0 - confidence)
+stability_adj = confidence_adj * regime_stability + 1.0 * (1.0 - regime_stability)
+
+vol_adjustment = garch_vol > vol_high_threshold ? 0.7 : garch_vol > vol_low_threshold ? 0.85 : 1.0
+position_size_multiplier = math.max(min_position_size / 100.0, math.min(max_leverage, stability_adj * vol_adjustment))
+final_position_size = base_position_size * position_size_multiplier
+
+// ============================================================================
+// TRADING SIGNALS (Using Optimizable Thresholds)
+// ============================================================================
+
+long_condition = current_regime == 1 and confidence > confidence_threshold and regime_stability > stability_threshold and not changepoint_detected
+short_condition = (current_regime == 2 or current_regime == 5) and confidence > confidence_threshold and regime_stability > stability_threshold and not changepoint_detected
+
+exit_long_condition = (current_regime != 1 or confidence < exit_confidence or changepoint_detected) and strategy.position_size > 0
+exit_short_condition = (current_regime != 2 and current_regime != 5 or confidence < exit_confidence or changepoint_detected) and strategy.position_size < 0
+
+if long_condition and strategy.position_size == 0
+    strategy.entry("Long", strategy.long, qty=final_position_size)
+
+if short_condition and strategy.position_size == 0
+    strategy.entry("Short", strategy.short, qty=final_position_size)
+
+if exit_long_condition
+    strategy.close("Long")
+
+if exit_short_condition
+    strategy.close("Short")
+
+// ============================================================================
+// PERFORMANCE TRACKING
+// ============================================================================
+
+var int total_regime_changes = 0
+var int correct_regime_calls = 0
+var float cumulative_pnl = 0.0
+
+if current_regime != current_regime[1]
+    total_regime_changes += 1
+
+    // Check if regime change was profitable
+    future_return = ta.roc(close, 5)
+    if (current_regime == 1 and future_return > 0) or (current_regime == 2 and future_return < 0)
+        correct_regime_calls += 1
+
+regime_accuracy = total_regime_changes > 0 ? correct_regime_calls / total_regime_changes : 0.0
+
+// Track PnL
+cumulative_pnl := strategy.netprofit
+
+// ============================================================================
+// VISUALIZATION
+// ============================================================================
+
+regime_color = current_regime == 1 ? color.new(color.green, 90) : current_regime == 2 ? color.new(color.red, 90) : current_regime == 3 ? color.new(color.orange, 90) : current_regime == 4 ? color.new(color.blue, 90) : color.new(color.purple, 90)
+
+bgcolor(show_regime_bg ? regime_color : na)
+
+regime_name = current_regime == 1 ? "BULL" : current_regime == 2 ? "BEAR" : current_regime == 3 ? "HIGH VOL" : current_regime == 4 ? "LOW VOL" : "CRISIS"
+
+if show_changepoints and changepoint_detected
+    label.new(bar_index, high, text="CP", style=label.style_xcross, color=color.red, size=size.tiny)
+
+plot(garch_vol, "GARCH Vol", color=color.purple, linewidth=2)
+hline(vol_low_threshold, "Low Vol", color=color.green, linestyle=hline.style_dotted)
+hline(vol_high_threshold, "High Vol", color=color.orange, linestyle=hline.style_dotted)
+hline(vol_crisis_threshold, "Crisis Vol", color=color.red, linestyle=hline.style_dotted)
+
+// ============================================================================
+// INFORMATION TABLE
+// ============================================================================
+
+var table info_table = table.new(position.top_right, 2, 18, border_width=1, border_color=color.gray, frame_color=color.gray, frame_width=1)
+
+if barstate.islast and show_info_table
+    table.cell(info_table, 0, 0, "FA-HMM Optimized", bgcolor=color.new(color.gray, 70), text_color=color.white, text_size=size.normal)
+    table.merge_cells(info_table, 0, 0, 1, 0)
+
+    table.cell(info_table, 0, 1, "Preset", bgcolor=color.new(color.gray, 90))
+    table.cell(info_table, 1, 1, preset_mode, text_color=color.yellow)
+
+    table.cell(info_table, 0, 2, "Adaptive", bgcolor=color.new(color.gray, 90))
+    table.cell(info_table, 1, 2, enable_adaptive ? "ON" : "OFF", text_color=enable_adaptive ? color.green : color.gray)
+
+    table.cell(info_table, 0, 3, "Market", bgcolor=color.new(color.gray, 90))
+    market_color = market_condition == "trending" ? color.green : market_condition == "volatile" ? color.red : color.blue
+    table.cell(info_table, 1, 3, market_condition, text_color=market_color)
+
+    regime_color_solid = current_regime == 1 ? color.green : current_regime == 2 ? color.red : current_regime == 3 ? color.orange : current_regime == 4 ? color.blue : color.purple
+    table.cell(info_table, 0, 4, "Regime", bgcolor=color.new(color.gray, 90))
+    table.cell(info_table, 1, 4, regime_name, bgcolor=color.new(regime_color_solid, 80), text_color=color.white)
+
+    table.cell(info_table, 0, 5, "Confidence", bgcolor=color.new(color.gray, 90))
+    table.cell(info_table, 1, 5, str.tostring(confidence * 100, "#.0") + "%", text_color=confidence > 0.7 ? color.green : color.orange)
+
+    table.cell(info_table, 0, 6, "Stability", bgcolor=color.new(color.gray, 90))
+    table.cell(info_table, 1, 6, str.tostring(regime_stability * 100, "#.0") + "%")
+
+    table.cell(info_table, 0, 7, "Duration", bgcolor=color.new(color.gray, 90))
+    table.cell(info_table, 1, 7, str.tostring(regime_duration) + " bars")
+
+    table.cell(info_table, 0, 8, "GARCH Vol", bgcolor=color.new(color.gray, 90))
+    vol_color = garch_vol > vol_crisis_threshold ? color.red : garch_vol > vol_high_threshold ? color.orange : color.green
+    table.cell(info_table, 1, 8, str.tostring(garch_vol * 100, "#.1") + "%", text_color=vol_color)
+
+    table.cell(info_table, 0, 9, "CUSUM+", bgcolor=color.new(color.gray, 90))
+    cusum_color = cusum_positive > cusum_threshold_adaptive ? color.red : color.gray
+    table.cell(info_table, 1, 9, str.tostring(cusum_positive, "#.2"), text_color=cusum_color)
+
+    table.cell(info_table, 0, 10, "Position %", bgcolor=color.new(color.gray, 90))
+    table.cell(info_table, 1, 10, str.tostring(final_position_size, "#.0") + "%", text_color=color.blue)
+
+    if show_perf_metrics
+        table.cell(info_table, 0, 11, "Performance", bgcolor=color.new(color.gray, 70), text_color=color.white)
+        table.merge_cells(info_table, 0, 11, 1, 11)
+
+        table.cell(info_table, 0, 12, "Regime Accuracy", bgcolor=color.new(color.gray, 90))
+        accuracy_color = regime_accuracy > 0.6 ? color.green : regime_accuracy > 0.5 ? color.orange : color.red
+        table.cell(info_table, 1, 12, str.tostring(regime_accuracy * 100, "#.0") + "%", text_color=accuracy_color)
+
+        table.cell(info_table, 0, 13, "Total Changes", bgcolor=color.new(color.gray, 90))
+        table.cell(info_table, 1, 13, str.tostring(total_regime_changes))
+
+        table.cell(info_table, 0, 14, "Net Profit", bgcolor=color.new(color.gray, 90))
+        pnl_color = cumulative_pnl > 0 ? color.green : color.red
+        table.cell(info_table, 1, 14, "$" + str.tostring(cumulative_pnl, "#.0"), text_color=pnl_color)
+
+    table.cell(info_table, 0, 15, "Probabilities", bgcolor=color.new(color.gray, 70), text_color=color.white)
+    table.merge_cells(info_table, 0, 15, 1, 15)
+
+    table.cell(info_table, 0, 16, "Bull", bgcolor=color.new(color.gray, 90))
+    table.cell(info_table, 1, 16, str.tostring(bull_prob * 100, "#.0") + "%", bgcolor=color.new(color.green, 90))
+
+    table.cell(info_table, 0, 17, "Bear", bgcolor=color.new(color.gray, 90))
+    table.cell(info_table, 1, 17, str.tostring(bear_prob * 100, "#.0") + "%", bgcolor=color.new(color.red, 90))
+
+// ============================================================================
+// ALERTS
+// ============================================================================
+
+alertcondition(long_condition, title="Optimized BULL Signal", message="BULL regime - Optimized entry")
+alertcondition(short_condition, title="Optimized BEAR Signal", message="BEAR regime - Optimized entry")
+alertcondition(changepoint_detected, title="Change Point", message="Structural break detected")
