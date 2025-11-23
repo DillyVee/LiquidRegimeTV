@@ -442,10 +442,10 @@ if barstate.islast and show_position_size
 // ============================================================================
 
 alertcondition(long_condition, title="Regime BULL - Go Long",
-               message="BULL regime detected with {{timenow}} - Confidence: " + str.tostring(confidence * 100, "#.0") + "%")
+               message="BULL regime detected at {{timenow}} - High confidence long signal")
 
 alertcondition(short_condition, title="Regime BEAR/CRISIS - Go Short",
-               message="BEAR/CRISIS regime detected with {{timenow}} - Confidence: " + str.tostring(confidence * 100, "#.0") + "%")
+               message="BEAR/CRISIS regime detected at {{timenow}} - High confidence short signal")
 
 alertcondition(regime == 5 and confidence > 0.7, title="CRISIS Regime Alert",
                message="CRISIS regime detected with HIGH confidence - Reduce exposure!")

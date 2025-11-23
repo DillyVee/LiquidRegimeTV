@@ -462,4 +462,4 @@ alertcondition(regime == 5 and confidence > 0.7, title="CRISIS Alert",
                message="CRISIS regime with HIGH confidence - Reduce exposure!")
 
 alertcondition(regime != regime[1], title="Regime Change",
-               message="Regime changed to " + regime_name)
+               message="Market regime has changed - Check indicator for details")
