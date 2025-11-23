@@ -106,12 +106,12 @@ calc_garch_forecast() =>
     alpha = 0.10
     beta = 0.85
     var float cond_var = na
+    // Extract ta.variance call outside conditional scope for consistency
+    base_var = ta.variance(returns, 20)
+    base_var := na(base_var) or base_var <= 0 ? 0.0001 : base_var
     if na(cond_var) or bar_index < 25
-        base_var = ta.variance(returns, 20)
-        cond_var := na(base_var) or base_var <= 0 ? 0.0001 : base_var
+        cond_var := base_var
     else
-        base_var = ta.variance(returns, 20)
-        base_var := na(base_var) or base_var <= 0 ? 0.0001 : base_var
         lag_returns_sq = na(returns_sq[1]) ? 0.0 : returns_sq[1]
         lag_cond_var = na(cond_var[1]) ? base_var : cond_var[1]
         cond_var := (1 - alpha - beta) * base_var + alpha * lag_returns_sq + beta * lag_cond_var
@@ -345,4 +345,4 @@ if barstate.islast and show_regime_info
 
 alertcondition(LongEntryCond, title="MirrorBot Long Entry", message="RSI of RSI Long + Regime Filter OK")
 alertcondition(ShortEntryCond, title="MirrorBot Short Entry", message="RSI of RSI Short + Regime Filter OK")
-alertcondition(current_regime != current_regime[1], title="Regime Change", message="Market regime changed to " + regime_name)
+alertcondition(current_regime != current_regime[1], title="Regime Change", message="Market regime has changed - check chart for details")
