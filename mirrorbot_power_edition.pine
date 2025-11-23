@@ -1,6 +1,6 @@
 // @version=5
 strategy("MirrorBot — Power Edition (Bayesian Regime + GARCH + Safe Auto-Tune)",
-  shorttitle="MirrorBot Pro",
+  shorttitle="MB-Power",
   overlay=true,
   initial_capital=100000,
   default_qty_type=strategy.percent_of_equity,
@@ -407,8 +407,9 @@ cusum_drift_ad := cusum_drift_ad * tune_decay + cusum_drift_mult * (1 - tune_dec
 // DISPLAY & DIAGNOSTICS
 // ==============================
 regime_color = final_regime == 0 ? color.gray : final_regime == 1 ? color.new(color.green, 85) : final_regime == 2 ? color.new(color.red, 85) : final_regime == 3 ? color.new(color.orange, 85) : final_regime == 4 ? color.new(color.blue, 85) : color.new(color.purple, 85)
-if show_bg
-    bgcolor(regime_color)
+
+// bgcolor must be called at global scope (cannot be inside if statement)
+bgcolor(show_bg ? regime_color : na)
 
 plotshape(series=final_regime == 1 ? 1 : na, title="Bull Regime", location=location.top, color=color.green, style=shape.labelup, text="BULL")
 plotshape(series=final_regime == 2 ? 1 : na, title="Bear Regime", location=location.top, color=color.red, style=shape.labeldown, text="BEAR")
