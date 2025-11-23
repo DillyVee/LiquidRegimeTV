@@ -259,8 +259,7 @@ confidence_adj = base_size * confidence + 1.0 * (1.0 - confidence)
 transition_adj = confidence_adj * transition_prob + 1.0 * (1.0 - transition_prob)
 
 // Clip to reasonable range
-position_size_multiplier = math.max(min_position_size / 100.0,
-                                    math.min(max_leverage, transition_adj))
+position_size_multiplier = math.max(min_position_size / 100.0, math.min(max_leverage, transition_adj))
 
 // Final position size as percentage
 final_position_size = base_position_size * position_size_multiplier
