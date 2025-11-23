@@ -33,15 +33,15 @@ enable_auto_tuning = input.bool(true, "Enable Auto-Tuning", group="Auto-Tuning S
 tuning_aggressiveness = input.float(0.05, "Tuning Aggressiveness", minval=0.01, maxval=0.20, step=0.01, group="Auto-Tuning System")
 performance_lookback = input.int(20, "Performance Lookback Trades", minval=10, maxval=50, group="Auto-Tuning System")
 
-// Initial Parameter Values (will be auto-adjusted)
+// Initial Parameter Values (will be auto-adjusted) - LOWERED FOR MORE TRADES
 vol_fast_init = input.int(10, "Initial Vol Fast", minval=5, maxval=20, group="Initial Parameters")
 vol_med_init = input.int(20, "Initial Vol Med", minval=10, maxval=40, group="Initial Parameters")
 vol_slow_init = input.int(60, "Initial Vol Slow", minval=30, maxval=100, group="Initial Parameters")
 cusum_thresh_init = input.float(3.0, "Initial CUSUM Threshold", minval=2.0, maxval=4.0, group="Initial Parameters")
 cusum_drift_init = input.float(0.5, "Initial CUSUM Drift", minval=0.3, maxval=0.7, group="Initial Parameters")
-min_duration_init = input.int(5, "Initial Min Duration", minval=3, maxval=15, group="Initial Parameters")
-conf_thresh_init = input.float(0.60, "Initial Confidence Thresh", minval=0.50, maxval=0.75, group="Initial Parameters")
-stab_thresh_init = input.float(0.55, "Initial Stability Thresh", minval=0.50, maxval=0.70, group="Initial Parameters")
+min_duration_init = input.int(3, "Initial Min Duration", minval=1, maxval=15, group="Initial Parameters")
+conf_thresh_init = input.float(0.50, "Initial Confidence Thresh", minval=0.40, maxval=0.75, group="Initial Parameters")
+stab_thresh_init = input.float(0.50, "Initial Stability Thresh", minval=0.40, maxval=0.70, group="Initial Parameters")
 
 // Regime Trading Permissions
 allow_bull_regime = input.bool(true, "Trade in BULL Regime", group="Regime Permissions")
@@ -218,7 +218,8 @@ var float cusum_pos = 0.0
 var float cusum_neg = 0.0
 
 // Calculate returns and statistics outside conditional for consistency
-returns = close[1] > 0 ? ta.change(close) / close[1] : 0.0
+price_change = ta.change(close)
+returns = close[1] > 0 ? price_change / close[1] : 0.0
 mean_return = ta.sma(returns, 100)
 std_return = ta.stdev(returns, 100)
 std_return := na(std_return) or std_return <= 0 ? 0.01 : std_return
@@ -389,12 +390,14 @@ confidence = calc_confidence()
 regime_name = current_regime == 1 ? "BULL" : current_regime == 2 ? "BEAR" : current_regime == 3 ? "HIGH VOL" : current_regime == 4 ? "LOW VOL" : "CRISIS"
 
 // ============================================================================
-// REGIME FILTER LOGIC
+// REGIME FILTER LOGIC (FIXED - DIRECTIONAL LOGIC)
 // ============================================================================
 
-regime_allows_long = (current_regime == 1 and allow_bull_regime) or (current_regime == 2 and allow_bear_regime) or (current_regime == 3 and allow_highvol_regime) or (current_regime == 4 and allow_lowvol_regime) or (current_regime == 5 and allow_crisis_regime)
+// LONGS: Favor BULL and LOW VOL regimes
+regime_allows_long = (current_regime == 1 and allow_bull_regime) or (current_regime == 4 and allow_lowvol_regime) or (current_regime == 3 and allow_highvol_regime)
 
-regime_allows_short = (current_regime == 1 and allow_bull_regime) or (current_regime == 2 and allow_bear_regime) or (current_regime == 3 and allow_highvol_regime) or (current_regime == 4 and allow_lowvol_regime) or (current_regime == 5 and allow_crisis_regime)
+// SHORTS: Favor BEAR, HIGH VOL, and CRISIS regimes
+regime_allows_short = (current_regime == 2 and allow_bear_regime) or (current_regime == 3 and allow_highvol_regime) or (current_regime == 5 and allow_crisis_regime)
 
 regime_quality_ok = confidence > confidence_threshold and regime_stability > stability_threshold
 
@@ -446,10 +449,10 @@ BackGroundColor = rsi2 < 100 and rsi2 > 0 ? color.rgb(19, 50, 75, 63) : na
 bgcolor(BackGroundColor)
 
 // ============================================================================
-// INFORMATION TABLE
+// INFORMATION TABLE (EXPANDED WITH PROBABILITIES)
 // ============================================================================
 
-var table info_table = table.new(position.top_right, 2, 22, border_width=1, border_color=color.gray)
+var table info_table = table.new(position.top_right, 2, 27, border_width=1, border_color=color.gray)
 
 if barstate.islast and show_info_table
     table.cell(info_table, 0, 0, "MirrorBot Auto-Tune", bgcolor=color.new(color.gray, 70), text_color=color.white)
@@ -524,6 +527,21 @@ if barstate.islast and show_info_table
 
     table.cell(info_table, 0, 21, "Probabilities", bgcolor=color.new(color.gray, 70), text_color=color.white)
     table.merge_cells(info_table, 0, 21, 1, 21)
+
+    table.cell(info_table, 0, 22, "BULL", bgcolor=color.new(color.gray, 90))
+    table.cell(info_table, 1, 22, str.tostring(bull_prob * 100, "#.0") + "%", bgcolor=color.new(color.green, 90))
+
+    table.cell(info_table, 0, 23, "BEAR", bgcolor=color.new(color.gray, 90))
+    table.cell(info_table, 1, 23, str.tostring(bear_prob * 100, "#.0") + "%", bgcolor=color.new(color.red, 90))
+
+    table.cell(info_table, 0, 24, "HIGH VOL", bgcolor=color.new(color.gray, 90))
+    table.cell(info_table, 1, 24, str.tostring(highvol_prob * 100, "#.0") + "%", bgcolor=color.new(color.orange, 90))
+
+    table.cell(info_table, 0, 25, "LOW VOL", bgcolor=color.new(color.gray, 90))
+    table.cell(info_table, 1, 25, str.tostring(lowvol_prob * 100, "#.0") + "%", bgcolor=color.new(color.blue, 90))
+
+    table.cell(info_table, 0, 26, "CRISIS", bgcolor=color.new(color.gray, 90))
+    table.cell(info_table, 1, 26, str.tostring(crisis_prob * 100, "#.0") + "%", bgcolor=color.new(color.purple, 90))
 
 // ============================================================================
 // ALERTS
