@@ -80,7 +80,7 @@ var float confidence_threshold_adaptive = conf_thresh_init
 var float stability_threshold_adaptive = stab_thresh_init
 
 // ============================================================================
-// PERFORMANCE TRACKING
+// PERFORMANCE TRACKING (MOVED OUTSIDE FUNCTION TO AVOID GLOBAL VAR ERRORS)
 // ============================================================================
 
 var array<float> recent_pnl = array.new_float()
@@ -89,37 +89,36 @@ var float cumulative_profit = 0.0
 var int winning_trades = 0
 var int losing_trades = 0
 
-calc_performance_metrics() =>
-    if strategy.closedtrades > total_trades_tracked
-        last_trade_pnl = strategy.netprofit - cumulative_profit
+// Track performance - update globals directly at script level
+var float last_pnl = 0.0
+var float win_rate = 0.0
+var float avg_pnl = 0.0
+var float performance_score = 0.0
 
-        if last_trade_pnl > 0
-            winning_trades += 1
-        else if last_trade_pnl < 0
-            losing_trades += 1
+if strategy.closedtrades > total_trades_tracked
+    last_pnl := strategy.netprofit - cumulative_profit
 
-        cumulative_profit := strategy.netprofit
-        total_trades_tracked += 1
+    if last_pnl > 0
+        winning_trades += 1
+    else if last_pnl < 0
+        losing_trades += 1
 
-        total_closed = winning_trades + losing_trades
-        current_win_rate = total_closed > 0 ? winning_trades / total_closed : 0.0
+    cumulative_profit := strategy.netprofit
+    total_trades_tracked += 1
 
-        array.push(recent_pnl, last_trade_pnl)
-        if array.size(recent_pnl) > performance_lookback
-            array.shift(recent_pnl)
+    array.push(recent_pnl, last_pnl)
+    if array.size(recent_pnl) > performance_lookback
+        array.shift(recent_pnl)
 
-        avg_recent_pnl = array.size(recent_pnl) > 0 ? array.avg(recent_pnl) : 0.0
-        perf_score = current_win_rate * 0.5 + (avg_recent_pnl > 0 ? 0.5 : 0.0)
-
-        [last_trade_pnl, current_win_rate, avg_recent_pnl, perf_score]
-    else
-        total_closed = winning_trades + losing_trades
-        current_win_rate = total_closed > 0 ? winning_trades / total_closed : 0.0
-        avg_recent_pnl = array.size(recent_pnl) > 0 ? array.avg(recent_pnl) : 0.0
-        perf_score = current_win_rate * 0.5 + (avg_recent_pnl > 0 ? 0.5 : 0.0)
-        [0.0, current_win_rate, avg_recent_pnl, perf_score]
-
-[last_pnl, win_rate, avg_pnl, performance_score] = calc_performance_metrics()
+    total_closed = winning_trades + losing_trades
+    win_rate := total_closed > 0 ? winning_trades / total_closed : 0.0
+    avg_pnl := array.size(recent_pnl) > 0 ? array.avg(recent_pnl) : 0.0
+    performance_score := win_rate * 0.5 + (avg_pnl > 0 ? 0.5 : 0.0)
+else
+    total_closed = winning_trades + losing_trades
+    win_rate := total_closed > 0 ? winning_trades / total_closed : 0.0
+    avg_pnl := array.size(recent_pnl) > 0 ? array.avg(recent_pnl) : 0.0
+    performance_score := win_rate * 0.5 + (avg_pnl > 0 ? 0.5 : 0.0)
 
 // ============================================================================
 // AUTO-TUNING LOGIC
@@ -211,26 +210,28 @@ calc_vol_clustering() =>
 vol_clustering = calc_vol_clustering()
 
 // ============================================================================
-// CUSUM CHANGE-POINT DETECTION
+// CUSUM CHANGE-POINT DETECTION (FIXED SCOPE ISSUES)
 // ============================================================================
 
-calc_cusum_statistic() =>
-    returns = close[1] > 0 ? ta.change(close) / close[1] : 0.0
-    if bar_index < 100
-        [0.0, 0.0]
-    else
-        mean_return = ta.sma(returns, 100)
-        std_return = ta.stdev(returns, 100)
-        std_return := na(std_return) or std_return <= 0 ? 0.01 : std_return
-        z_score = (returns - mean_return) / std_return
-        z_score := na(z_score) ? 0.0 : z_score
-        var float cusum_pos = 0.0
-        var float cusum_neg = 0.0
-        cusum_pos := math.max(0, cusum_pos[1] + z_score - cusum_drift)
-        cusum_neg := math.max(0, cusum_neg[1] - z_score - cusum_drift)
-        [cusum_pos, cusum_neg]
+// Declare CUSUM variables at global scope to ensure they update every bar
+var float cusum_pos = 0.0
+var float cusum_neg = 0.0
 
-[cusum_positive, cusum_negative] = calc_cusum_statistic()
+// Calculate returns and statistics outside conditional for consistency
+returns = close[1] > 0 ? ta.change(close) / close[1] : 0.0
+mean_return = ta.sma(returns, 100)
+std_return = ta.stdev(returns, 100)
+std_return := na(std_return) or std_return <= 0 ? 0.01 : std_return
+
+// Only update CUSUM after sufficient data
+if bar_index >= 100
+    z_score = (returns - mean_return) / std_return
+    z_score := na(z_score) ? 0.0 : z_score
+    cusum_pos := math.max(0, cusum_pos[1] + z_score - cusum_drift)
+    cusum_neg := math.max(0, cusum_neg[1] - z_score - cusum_drift)
+
+cusum_positive = cusum_pos
+cusum_negative = cusum_neg
 changepoint_detected = cusum_positive > cusum_threshold or cusum_negative > cusum_threshold
 
 // ============================================================================
@@ -353,6 +354,7 @@ crisis_prob = total_emissions > 0 ? crisis_emissions / total_emissions : 0.2
 
 var int current_regime = 1
 var int regime_duration = 0
+var int prev_regime = 1
 
 raw_regime = bull_prob >= bear_prob and bull_prob >= highvol_prob and bull_prob >= lowvol_prob and bull_prob >= crisis_prob ? 1 : bear_prob >= highvol_prob and bear_prob >= lowvol_prob and bear_prob >= crisis_prob ? 2 : highvol_prob >= lowvol_prob and highvol_prob >= crisis_prob ? 3 : lowvol_prob >= crisis_prob ? 4 : 5
 
@@ -362,11 +364,14 @@ current_regime_score = current_regime == 1 ? bull_prob : current_regime == 2 ? b
 
 regime_should_switch = regime_switch_score > current_regime_score + transition_barrier and regime_duration >= min_regime_duration
 
+prev_regime := current_regime
 if regime_should_switch or changepoint_detected
     current_regime := raw_regime
     regime_duration := 0
 else
     regime_duration += 1
+
+regime_changed = current_regime != prev_regime
 
 regime_stability = math.min(0.95, 0.50 + regime_duration / 100.0)
 
@@ -526,4 +531,4 @@ if barstate.islast and show_info_table
 
 alertcondition(LongEntryCond, title="MirrorBot Long Entry", message="RSI of RSI Long + Auto-Tuned Regime Filter OK")
 alertcondition(ShortEntryCond, title="MirrorBot Short Entry", message="RSI of RSI Short + Auto-Tuned Regime Filter OK")
-alertcondition(current_regime != current_regime[1], title="Regime Change", message="Market regime has changed - auto-tuning adjusting")
+alertcondition(regime_changed, title="Regime Change", message="Market regime has changed - auto-tuning adjusting")
