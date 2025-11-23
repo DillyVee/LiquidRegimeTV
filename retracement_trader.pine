@@ -1,0 +1,464 @@
+// @version=5
+strategy("Retracement Trader - ATH/ATL Multi-Timeframe",
+  shorttitle="Retrace-MTF",
+  overlay=true,
+  initial_capital=100000,
+  default_qty_type=strategy.percent_of_equity,
+  default_qty_value=100,
+  commission_type=strategy.commission.percent,
+  commission_value=0.075,
+  slippage=1)
+
+// ============================================================================
+// MULTI-TIMEFRAME RETRACEMENT TRADING SYSTEM
+// ============================================================================
+// Features:
+// - Fetch ATH/ATL from higher timeframes (bypass data restrictions)
+// - Multiple customizable entry levels with individual toggles
+// - Multiple customizable exit levels with individual toggles
+// - Entry when price crosses DOWN through any enabled entry level
+// - Exit when price crosses UP through any enabled exit level
+// - Two range modes: ATL-ATH or 0-ATH
+// - Visual level display on chart with color coding
+// - Entry tracking and alerts
+// ============================================================================
+
+// ============================================================================
+// USER INPUTS
+// ============================================================================
+
+// Timeframe for ATH/ATL calculation
+htf_input = input.timeframe("D", "ATH/ATL Timeframe",
+  group="Multi-Timeframe Settings",
+  tooltip="Fetch ATH/ATL from this timeframe to get true all-time levels. Use D (daily) or W (weekly) for complete history.")
+
+// Range Selection
+range_mode = input.string("ATL to ATH", "Range Mode",
+  options=["ATL to ATH", "0 to ATH"],
+  group="Range Settings",
+  tooltip="ATL to ATH uses all-time low to all-time high. 0 to ATH uses zero to all-time high.")
+
+// ============================================================================
+// LONG ENTRY LEVELS (Enter when price crosses DOWN through these levels)
+// ============================================================================
+enable_long_entry_1 = input.bool(true, "Entry 1", inline="le1", group="Long Entry Levels")
+long_entry_pct_1 = input.float(12.5, "", minval=0, maxval=100, step=0.1, inline="le1", group="Long Entry Levels")
+
+enable_long_entry_2 = input.bool(true, "Entry 2", inline="le2", group="Long Entry Levels")
+long_entry_pct_2 = input.float(25.0, "", minval=0, maxval=100, step=0.1, inline="le2", group="Long Entry Levels")
+
+enable_long_entry_3 = input.bool(true, "Entry 3", inline="le3", group="Long Entry Levels")
+long_entry_pct_3 = input.float(38.2, "", minval=0, maxval=100, step=0.1, inline="le3", group="Long Entry Levels")
+
+enable_long_entry_4 = input.bool(true, "Entry 4", inline="le4", group="Long Entry Levels")
+long_entry_pct_4 = input.float(66.6, "", minval=0, maxval=100, step=0.1, inline="le4", group="Long Entry Levels")
+
+enable_long_entry_5 = input.bool(true, "Entry 5", inline="le5", group="Long Entry Levels")
+long_entry_pct_5 = input.float(78.6, "", minval=0, maxval=100, step=0.1, inline="le5", group="Long Entry Levels")
+
+enable_long_entry_6 = input.bool(true, "Entry 6", inline="le6", group="Long Entry Levels")
+long_entry_pct_6 = input.float(88.6, "", minval=0, maxval=100, step=0.1, inline="le6", group="Long Entry Levels")
+
+// ============================================================================
+// LONG EXIT LEVELS (Exit when price crosses UP through these levels)
+// ============================================================================
+enable_long_exit_1 = input.bool(true, "Exit 1", inline="lx1", group="Long Exit Levels")
+long_exit_pct_1 = input.float(11.4, "", minval=0, maxval=100, step=0.1, inline="lx1", group="Long Exit Levels")
+
+enable_long_exit_2 = input.bool(true, "Exit 2", inline="lx2", group="Long Exit Levels")
+long_exit_pct_2 = input.float(21.4, "", minval=0, maxval=100, step=0.1, inline="lx2", group="Long Exit Levels")
+
+enable_long_exit_3 = input.bool(true, "Exit 3", inline="lx3", group="Long Exit Levels")
+long_exit_pct_3 = input.float(33.3, "", minval=0, maxval=100, step=0.1, inline="lx3", group="Long Exit Levels")
+
+enable_long_exit_4 = input.bool(true, "Exit 4", inline="lx4", group="Long Exit Levels")
+long_exit_pct_4 = input.float(61.8, "", minval=0, maxval=100, step=0.1, inline="lx4", group="Long Exit Levels")
+
+enable_long_exit_5 = input.bool(true, "Exit 5", inline="lx5", group="Long Exit Levels")
+long_exit_pct_5 = input.float(75.0, "", minval=0, maxval=100, step=0.1, inline="lx5", group="Long Exit Levels")
+
+enable_long_exit_6 = input.bool(true, "Exit 6", inline="lx6", group="Long Exit Levels")
+long_exit_pct_6 = input.float(87.5, "", minval=0, maxval=100, step=0.1, inline="lx6", group="Long Exit Levels")
+
+// Additional Levels to Display
+show_23_6 = input.bool(true, "Show 23.6%", group="Display Levels")
+show_38_2 = input.bool(true, "Show 38.2%", group="Display Levels")
+show_50_0 = input.bool(true, "Show 50.0%", group="Display Levels")
+show_61_8 = input.bool(true, "Show 61.8%", group="Display Levels")
+show_78_6 = input.bool(true, "Show 78.6%", group="Display Levels")
+
+// Trading Mode
+trading_mode = input.string("Both", "Trading Mode",
+  options=["Long Only", "Short Only", "Both"],
+  group="Trading Settings")
+
+// Position Sizing
+base_position_size = input.float(100.0, "Position Size (% of equity)", minval=1, maxval=100, group="Trading Settings")
+
+// Display
+show_levels = input.bool(true, "Show Retracement Levels", group="Display")
+show_info = input.bool(true, "Show Info Table", group="Display")
+label_offset = input.int(20, "Label Offset (bars)", minval=1, group="Display")
+
+// ============================================================================
+// FETCH HIGH/LOW FROM HIGHER TIMEFRAME
+// ============================================================================
+
+// Determine effective timeframe (use current if higher timeframe is lower than current)
+effective_htf = timeframe.in_seconds(htf_input) >= timeframe.in_seconds(timeframe.period) ? htf_input : timeframe.period
+
+// Request high/low from higher timeframe
+[htf_high, htf_low] = request.security(syminfo.tickerid, effective_htf, [high, low], lookahead=barmerge.lookahead_on)
+
+// ============================================================================
+// CALCULATE ALL-TIME HIGH AND LOW FROM HTF DATA
+// ============================================================================
+
+var float ath = na
+var float atl = na
+var int ath_bar = 0
+var int atl_bar = 0
+
+// Initialize on first bar
+if na(ath) or na(atl)
+    ath := htf_high
+    atl := htf_low
+    ath_bar := bar_index
+    atl_bar := bar_index
+
+// Update all-time high from HTF data
+if htf_high > ath
+    ath := htf_high
+    ath_bar := bar_index
+
+// Update all-time low from HTF data
+if htf_low < atl
+    atl := htf_low
+    atl_bar := bar_index
+
+// Store the ATH for exits (this is our take profit target for longs)
+var float stored_ath_for_exit = na
+stored_ath_for_exit := ath  // Always track current ATH
+
+// Store the ATL for exits (this is our take profit target for shorts)
+var float stored_atl_for_exit = na
+stored_atl_for_exit := atl  // Always track current ATL
+
+// ============================================================================
+// CALCULATE RANGE AND RETRACEMENT LEVELS
+// ============================================================================
+
+// Determine range based on mode
+range_low = range_mode == "ATL to ATH" ? atl : 0.0
+range_high = ath
+range_size = range_high - range_low
+
+// Calculate retracement level prices
+calc_level(percentage) =>
+    range_low + (range_size * percentage / 100.0)
+
+// Long Entry Levels - Calculate prices for all enabled levels
+long_entry_price_1 = enable_long_entry_1 ? calc_level(long_entry_pct_1) : na
+long_entry_price_2 = enable_long_entry_2 ? calc_level(long_entry_pct_2) : na
+long_entry_price_3 = enable_long_entry_3 ? calc_level(long_entry_pct_3) : na
+long_entry_price_4 = enable_long_entry_4 ? calc_level(long_entry_pct_4) : na
+long_entry_price_5 = enable_long_entry_5 ? calc_level(long_entry_pct_5) : na
+long_entry_price_6 = enable_long_entry_6 ? calc_level(long_entry_pct_6) : na
+
+// Long Exit Levels - Calculate prices for all enabled levels
+long_exit_price_1 = enable_long_exit_1 ? calc_level(long_exit_pct_1) : na
+long_exit_price_2 = enable_long_exit_2 ? calc_level(long_exit_pct_2) : na
+long_exit_price_3 = enable_long_exit_3 ? calc_level(long_exit_pct_3) : na
+long_exit_price_4 = enable_long_exit_4 ? calc_level(long_exit_pct_4) : na
+long_exit_price_5 = enable_long_exit_5 ? calc_level(long_exit_pct_5) : na
+long_exit_price_6 = enable_long_exit_6 ? calc_level(long_exit_pct_6) : na
+
+// Common Fibonacci levels (for reference display only)
+level_23_6 = calc_level(23.6)
+level_38_2 = calc_level(38.2)
+level_50_0 = calc_level(50.0)
+level_61_8 = calc_level(61.8)
+level_78_6 = calc_level(78.6)
+
+// ============================================================================
+// TRADING LOGIC
+// ============================================================================
+
+// Mode filters
+can_long = trading_mode == "Long Only" or trading_mode == "Both"
+can_short = trading_mode == "Short Only" or trading_mode == "Both"
+
+// Long Entry: Trigger when price crosses DOWN through ANY enabled entry level
+long_entry_1 = enable_long_entry_1 and ta.crossunder(close, long_entry_price_1)
+long_entry_2 = enable_long_entry_2 and ta.crossunder(close, long_entry_price_2)
+long_entry_3 = enable_long_entry_3 and ta.crossunder(close, long_entry_price_3)
+long_entry_4 = enable_long_entry_4 and ta.crossunder(close, long_entry_price_4)
+long_entry_5 = enable_long_entry_5 and ta.crossunder(close, long_entry_price_5)
+long_entry_6 = enable_long_entry_6 and ta.crossunder(close, long_entry_price_6)
+
+long_entry_condition = (long_entry_1 or long_entry_2 or long_entry_3 or long_entry_4 or long_entry_5 or long_entry_6) and can_long
+
+// Long Exit: Trigger when price crosses DOWN through ANY enabled exit level (stop-loss) OR when new ATH is made
+long_exit_1 = enable_long_exit_1 and ta.crossunder(close, long_exit_price_1)
+long_exit_2 = enable_long_exit_2 and ta.crossunder(close, long_exit_price_2)
+long_exit_3 = enable_long_exit_3 and ta.crossunder(close, long_exit_price_3)
+long_exit_4 = enable_long_exit_4 and ta.crossunder(close, long_exit_price_4)
+long_exit_5 = enable_long_exit_5 and ta.crossunder(close, long_exit_price_5)
+long_exit_6 = enable_long_exit_6 and ta.crossunder(close, long_exit_price_6)
+
+// Detect when ATH changes (new all-time high)
+ath_changed = ath != ath[1] and not na(ath[1])
+
+long_exit_condition = long_exit_1 or long_exit_2 or long_exit_3 or long_exit_4 or long_exit_5 or long_exit_6 or ath_changed
+
+// Determine which level triggered (for alerts and tracking)
+var string entry_trigger = ""
+var string exit_trigger = ""
+
+if long_entry_1
+    entry_trigger := "Entry 1 (" + str.tostring(long_entry_pct_1, "#.#") + "%)"
+else if long_entry_2
+    entry_trigger := "Entry 2 (" + str.tostring(long_entry_pct_2, "#.#") + "%)"
+else if long_entry_3
+    entry_trigger := "Entry 3 (" + str.tostring(long_entry_pct_3, "#.#") + "%)"
+else if long_entry_4
+    entry_trigger := "Entry 4 (" + str.tostring(long_entry_pct_4, "#.#") + "%)"
+else if long_entry_5
+    entry_trigger := "Entry 5 (" + str.tostring(long_entry_pct_5, "#.#") + "%)"
+else if long_entry_6
+    entry_trigger := "Entry 6 (" + str.tostring(long_entry_pct_6, "#.#") + "%)"
+
+if ath_changed
+    exit_trigger := "New ATH: " + str.tostring(ath, "#.####")
+else if long_exit_1
+    exit_trigger := "Exit 1 (" + str.tostring(long_exit_pct_1, "#.#") + "%)"
+else if long_exit_2
+    exit_trigger := "Exit 2 (" + str.tostring(long_exit_pct_2, "#.#") + "%)"
+else if long_exit_3
+    exit_trigger := "Exit 3 (" + str.tostring(long_exit_pct_3, "#.#") + "%)"
+else if long_exit_4
+    exit_trigger := "Exit 4 (" + str.tostring(long_exit_pct_4, "#.#") + "%)"
+else if long_exit_5
+    exit_trigger := "Exit 5 (" + str.tostring(long_exit_pct_5, "#.#") + "%)"
+else if long_exit_6
+    exit_trigger := "Exit 6 (" + str.tostring(long_exit_pct_6, "#.#") + "%)"
+
+// Execute trades
+if long_entry_condition and strategy.position_size == 0
+    strategy.entry("Long", strategy.long, qty=base_position_size)
+
+if long_exit_condition and strategy.position_size > 0
+    strategy.close("Long")
+
+// ============================================================================
+// VISUALIZATION - RETRACEMENT LEVELS
+// ============================================================================
+
+if show_levels and barstate.islast
+    // ATH line (reference)
+    line.new(bar_index - 200, ath, bar_index + label_offset, ath,
+      color=color.new(color.green, 0), width=2, style=line.style_solid)
+    label.new(bar_index + label_offset, ath,
+      "ATH: " + str.tostring(ath, "#.####"),
+      style=label.style_label_left, color=color.new(color.green, 10), textcolor=color.white, size=size.small)
+
+    // ATL or Zero line (reference)
+    if range_mode == "ATL to ATH"
+        line.new(bar_index - 200, atl, bar_index + label_offset, atl,
+          color=color.new(color.red, 0), width=2, style=line.style_solid)
+        label.new(bar_index + label_offset, atl,
+          "ATL: " + str.tostring(atl, "#.####"),
+          style=label.style_label_left, color=color.new(color.red, 10), textcolor=color.white, size=size.small)
+    else
+        line.new(bar_index - 200, 0, bar_index + label_offset, 0,
+          color=color.new(color.red, 0), width=2, style=line.style_solid)
+        label.new(bar_index + label_offset, 0,
+          "Zero: 0.00",
+          style=label.style_label_left, color=color.new(color.red, 10), textcolor=color.white, size=size.small)
+
+    // Long Entry Levels (BLUE - Dashed)
+    if enable_long_entry_1
+        line.new(bar_index - 200, long_entry_price_1, bar_index + label_offset, long_entry_price_1,
+          color=color.new(color.blue, 0), width=2, style=line.style_dashed)
+        label.new(bar_index + label_offset, long_entry_price_1,
+          "Long Entry 1 (" + str.tostring(long_entry_pct_1, "#.#") + "%)",
+          style=label.style_label_left, color=color.new(color.blue, 20), textcolor=color.white, size=size.tiny)
+
+    if enable_long_entry_2
+        line.new(bar_index - 200, long_entry_price_2, bar_index + label_offset, long_entry_price_2,
+          color=color.new(color.blue, 0), width=2, style=line.style_dashed)
+        label.new(bar_index + label_offset, long_entry_price_2,
+          "Long Entry 2 (" + str.tostring(long_entry_pct_2, "#.#") + "%)",
+          style=label.style_label_left, color=color.new(color.blue, 20), textcolor=color.white, size=size.tiny)
+
+    if enable_long_entry_3
+        line.new(bar_index - 200, long_entry_price_3, bar_index + label_offset, long_entry_price_3,
+          color=color.new(color.blue, 0), width=2, style=line.style_dashed)
+        label.new(bar_index + label_offset, long_entry_price_3,
+          "Long Entry 3 (" + str.tostring(long_entry_pct_3, "#.#") + "%)",
+          style=label.style_label_left, color=color.new(color.blue, 20), textcolor=color.white, size=size.tiny)
+
+    if enable_long_entry_4
+        line.new(bar_index - 200, long_entry_price_4, bar_index + label_offset, long_entry_price_4,
+          color=color.new(color.blue, 0), width=2, style=line.style_dashed)
+        label.new(bar_index + label_offset, long_entry_price_4,
+          "Long Entry 4 (" + str.tostring(long_entry_pct_4, "#.#") + "%)",
+          style=label.style_label_left, color=color.new(color.blue, 20), textcolor=color.white, size=size.tiny)
+
+    if enable_long_entry_5
+        line.new(bar_index - 200, long_entry_price_5, bar_index + label_offset, long_entry_price_5,
+          color=color.new(color.blue, 0), width=2, style=line.style_dashed)
+        label.new(bar_index + label_offset, long_entry_price_5,
+          "Long Entry 5 (" + str.tostring(long_entry_pct_5, "#.#") + "%)",
+          style=label.style_label_left, color=color.new(color.blue, 20), textcolor=color.white, size=size.tiny)
+
+    if enable_long_entry_6
+        line.new(bar_index - 200, long_entry_price_6, bar_index + label_offset, long_entry_price_6,
+          color=color.new(color.blue, 0), width=2, style=line.style_dashed)
+        label.new(bar_index + label_offset, long_entry_price_6,
+          "Long Entry 6 (" + str.tostring(long_entry_pct_6, "#.#") + "%)",
+          style=label.style_label_left, color=color.new(color.blue, 20), textcolor=color.white, size=size.tiny)
+
+    // Long Exit Levels (LIME - Dotted)
+    if enable_long_exit_1
+        line.new(bar_index - 200, long_exit_price_1, bar_index + label_offset, long_exit_price_1,
+          color=color.new(color.lime, 0), width=2, style=line.style_dotted)
+        label.new(bar_index + label_offset, long_exit_price_1,
+          "Long Exit 1 (" + str.tostring(long_exit_pct_1, "#.#") + "%)",
+          style=label.style_label_left, color=color.new(color.lime, 40), textcolor=color.black, size=size.tiny)
+
+    if enable_long_exit_2
+        line.new(bar_index - 200, long_exit_price_2, bar_index + label_offset, long_exit_price_2,
+          color=color.new(color.lime, 0), width=2, style=line.style_dotted)
+        label.new(bar_index + label_offset, long_exit_price_2,
+          "Long Exit 2 (" + str.tostring(long_exit_pct_2, "#.#") + "%)",
+          style=label.style_label_left, color=color.new(color.lime, 40), textcolor=color.black, size=size.tiny)
+
+    if enable_long_exit_3
+        line.new(bar_index - 200, long_exit_price_3, bar_index + label_offset, long_exit_price_3,
+          color=color.new(color.lime, 0), width=2, style=line.style_dotted)
+        label.new(bar_index + label_offset, long_exit_price_3,
+          "Long Exit 3 (" + str.tostring(long_exit_pct_3, "#.#") + "%)",
+          style=label.style_label_left, color=color.new(color.lime, 40), textcolor=color.black, size=size.tiny)
+
+    if enable_long_exit_4
+        line.new(bar_index - 200, long_exit_price_4, bar_index + label_offset, long_exit_price_4,
+          color=color.new(color.lime, 0), width=2, style=line.style_dotted)
+        label.new(bar_index + label_offset, long_exit_price_4,
+          "Long Exit 4 (" + str.tostring(long_exit_pct_4, "#.#") + "%)",
+          style=label.style_label_left, color=color.new(color.lime, 40), textcolor=color.black, size=size.tiny)
+
+    if enable_long_exit_5
+        line.new(bar_index - 200, long_exit_price_5, bar_index + label_offset, long_exit_price_5,
+          color=color.new(color.lime, 0), width=2, style=line.style_dotted)
+        label.new(bar_index + label_offset, long_exit_price_5,
+          "Long Exit 5 (" + str.tostring(long_exit_pct_5, "#.#") + "%)",
+          style=label.style_label_left, color=color.new(color.lime, 40), textcolor=color.black, size=size.tiny)
+
+    if enable_long_exit_6
+        line.new(bar_index - 200, long_exit_price_6, bar_index + label_offset, long_exit_price_6,
+          color=color.new(color.lime, 0), width=2, style=line.style_dotted)
+        label.new(bar_index + label_offset, long_exit_price_6,
+          "Long Exit 6 (" + str.tostring(long_exit_pct_6, "#.#") + "%)",
+          style=label.style_label_left, color=color.new(color.lime, 40), textcolor=color.black, size=size.tiny)
+
+    // Standard Fibonacci levels (subtle)
+    if show_23_6
+        line.new(bar_index - 200, level_23_6, bar_index + label_offset, level_23_6,
+          color=color.new(color.gray, 60), width=1, style=line.style_dotted)
+        label.new(bar_index + label_offset, level_23_6, "23.6%: " + str.tostring(level_23_6, "#.####"),
+          style=label.style_label_left, color=color.new(color.gray, 80), textcolor=color.gray, size=size.tiny)
+
+    if show_38_2
+        line.new(bar_index - 200, level_38_2, bar_index + label_offset, level_38_2,
+          color=color.new(color.gray, 60), width=1, style=line.style_dotted)
+        label.new(bar_index + label_offset, level_38_2, "38.2%: " + str.tostring(level_38_2, "#.####"),
+          style=label.style_label_left, color=color.new(color.gray, 80), textcolor=color.gray, size=size.tiny)
+
+    if show_50_0
+        line.new(bar_index - 200, level_50_0, bar_index + label_offset, level_50_0,
+          color=color.new(color.gray, 60), width=1, style=line.style_dotted)
+        label.new(bar_index + label_offset, level_50_0, "50.0%: " + str.tostring(level_50_0, "#.####"),
+          style=label.style_label_left, color=color.new(color.gray, 80), textcolor=color.gray, size=size.tiny)
+
+    if show_61_8
+        line.new(bar_index - 200, level_61_8, bar_index + label_offset, level_61_8,
+          color=color.new(color.gray, 60), width=1, style=line.style_dotted)
+        label.new(bar_index + label_offset, level_61_8, "61.8%: " + str.tostring(level_61_8, "#.####"),
+          style=label.style_label_left, color=color.new(color.gray, 80), textcolor=color.gray, size=size.tiny)
+
+    if show_78_6
+        line.new(bar_index - 200, level_78_6, bar_index + label_offset, level_78_6,
+          color=color.new(color.gray, 60), width=1, style=line.style_dotted)
+        label.new(bar_index + label_offset, level_78_6, "78.6%: " + str.tostring(level_78_6, "#.####"),
+          style=label.style_label_left, color=color.new(color.gray, 80), textcolor=color.gray, size=size.tiny)
+
+// ============================================================================
+// INFO TABLE
+// ============================================================================
+
+if show_info and barstate.islast
+    // Count active levels
+    entry_count = (enable_long_entry_1 ? 1 : 0) + (enable_long_entry_2 ? 1 : 0) + (enable_long_entry_3 ? 1 : 0) + (enable_long_entry_4 ? 1 : 0) + (enable_long_entry_5 ? 1 : 0) + (enable_long_entry_6 ? 1 : 0)
+    exit_count = (enable_long_exit_1 ? 1 : 0) + (enable_long_exit_2 ? 1 : 0) + (enable_long_exit_3 ? 1 : 0) + (enable_long_exit_4 ? 1 : 0) + (enable_long_exit_5 ? 1 : 0) + (enable_long_exit_6 ? 1 : 0)
+
+    var table info = table.new(position.top_right, 2, 14, border_width=1)
+
+    table.cell(info, 0, 0, "Retracement Trader MTF", bgcolor=color.new(color.blue, 70), text_color=color.white)
+    table.merge_cells(info, 0, 0, 1, 0)
+
+    table.cell(info, 0, 1, "HTF Source", bgcolor=color.new(color.gray, 90))
+    table.cell(info, 1, 1, effective_htf, text_color=color.yellow)
+
+    table.cell(info, 0, 2, "Range Mode", bgcolor=color.new(color.gray, 90))
+    table.cell(info, 1, 2, range_mode, text_color=color.white)
+
+    table.cell(info, 0, 3, "Trading Mode", bgcolor=color.new(color.gray, 90))
+    mode_color = trading_mode == "Long Only" ? color.green : trading_mode == "Short Only" ? color.red : color.blue
+    table.cell(info, 1, 3, trading_mode, text_color=mode_color)
+
+    table.cell(info, 0, 4, "Range", bgcolor=color.new(color.gray, 70), text_color=color.white)
+    table.merge_cells(info, 0, 4, 1, 4)
+
+    table.cell(info, 0, 5, "ATH", bgcolor=color.new(color.gray, 90))
+    table.cell(info, 1, 5, str.tostring(ath, "#.####"), text_color=color.green)
+
+    table.cell(info, 0, 6, "ATL/Zero", bgcolor=color.new(color.gray, 90))
+    table.cell(info, 1, 6, str.tostring(range_low, "#.####"), text_color=color.red)
+
+    table.cell(info, 0, 7, "Range Size", bgcolor=color.new(color.gray, 90))
+    table.cell(info, 1, 7, str.tostring(range_size, "#.####"), text_color=color.white)
+
+    table.cell(info, 0, 8, "Active Levels", bgcolor=color.new(color.gray, 70), text_color=color.white)
+    table.merge_cells(info, 0, 8, 1, 8)
+
+    table.cell(info, 0, 9, "Entry Levels", bgcolor=color.new(color.gray, 90))
+    table.cell(info, 1, 9, str.tostring(entry_count) + " active", text_color=color.blue)
+
+    table.cell(info, 0, 10, "Exit Levels", bgcolor=color.new(color.gray, 90))
+    table.cell(info, 1, 10, str.tostring(exit_count) + " active", text_color=color.lime)
+
+    table.cell(info, 0, 11, "Status", bgcolor=color.new(color.gray, 70), text_color=color.white)
+    table.merge_cells(info, 0, 11, 1, 11)
+
+    table.cell(info, 0, 12, "Current Price", bgcolor=color.new(color.gray, 90))
+    price_pct = range_size > 0 ? (close - range_low) / range_size * 100 : 0
+    table.cell(info, 1, 12, str.tostring(close, "#.####") + " (" + str.tostring(price_pct, "#.#") + "%)", text_color=color.yellow)
+
+    table.cell(info, 0, 13, "Net P&L", bgcolor=color.new(color.gray, 90))
+    pnl_color = strategy.netprofit > 0 ? color.green : color.red
+    table.cell(info, 1, 13, str.tostring(strategy.netprofit, "#,###"), text_color=pnl_color)
+
+// ============================================================================
+// ALERTS
+// ============================================================================
+
+if long_entry_condition
+    alert("Retracement: Long Entry at " + str.tostring(close, "#.####") + " | Triggered by " + entry_trigger, alert.freq_once_per_bar_close)
+
+if long_exit_condition
+    alert("Retracement: Long Exit at " + str.tostring(close, "#.####") + " | Triggered by " + exit_trigger, alert.freq_once_per_bar_close)
+
+// ============================================================================
+// END - RETRACEMENT TRADER MTF
+// ============================================================================
