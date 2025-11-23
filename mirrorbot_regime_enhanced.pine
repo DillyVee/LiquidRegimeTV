@@ -1,0 +1,348 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © DillyV - Enhanced with FA-HMM Regime Detection
+
+//@version=5
+strategy("MirrorBot [V4] + FA-HMM Regime",
+         shorttitle="MirrorBot Regime",
+         overlay=true,
+         default_qty_type=strategy.percent_of_equity,
+         default_qty_value=100,
+         initial_capital=100000,
+         commission_type=strategy.commission.percent,
+         commission_value=0.1,
+         slippage=2)
+
+//*************************************************************************//
+//                         ╔╦══╦╦═══════╦═╦═══╦╦═╗                         //
+//                         ║║║║╠╬═╦═╦═╦═╣░╩╦═╦╣╠╗║                         //
+//                         ║║║║║║╠╣╠╣║║╠╣░░║║╠╗╔╣║                         //
+//                         ║╚╩╩╩╩╝╚╝╚═╩╝╚══╩═╝╚═╝║                         //
+//                         ╚═════════════════════╝                         //
+//*************************************************************************//
+
+// ============================================================================
+// TRADING MODE SETTINGS
+// ============================================================================
+
+trading_mode = input.string("Both", "Trading Mode", options=["Long Only", "Short Only", "Both"], group="Trading Mode")
+use_regime_filter = input.bool(true, "Use Regime Filter", group="Trading Mode", tooltip="Filter trades by market regime")
+
+// ============================================================================
+// RSI OF RSI SETTINGS (ENTRY TIMING)
+// ============================================================================
+
+Can_Source = input.source(hlc3, "Source", group="RSI Settings")
+Magic_Num = input(9, "Magic Number 1 (RSI Period)", group="RSI Settings")
+Magic_Num1 = input(144, "Magic Number 2 (RSI of RSI Period)", group="RSI Settings")
+LongEntryLimit = input.float(49.9, "Long Entry Value", minval=0, maxval=100, step=0.01, group="RSI Settings")
+LongEntryTP = input.float(50, "Long TP Value", minval=0, maxval=100, step=0.01, group="RSI Settings")
+ShortEntryLimit = input.float(50.1, "Short Entry Value", minval=0, maxval=100, step=0.01, group="RSI Settings")
+ShortEntryTP = input.float(50, "Short TP Value", minval=0, maxval=100, step=0.01, group="RSI Settings")
+
+// ============================================================================
+// REGIME DETECTION SETTINGS
+// ============================================================================
+
+// Volatility Settings
+vol_lookback_fast = input.int(10, "Vol Fast Period", minval=5, maxval=50, group="Regime Detection")
+vol_lookback_med = input.int(20, "Vol Medium Period", minval=10, maxval=100, group="Regime Detection")
+vol_lookback_slow = input.int(60, "Vol Slow Period", minval=20, maxval=200, group="Regime Detection")
+
+// Regime Thresholds
+vol_low_threshold = input.float(0.10, "Low Vol Threshold", minval=0.05, maxval=0.30, group="Regime Detection")
+vol_high_threshold = input.float(0.25, "High Vol Threshold", minval=0.15, maxval=0.50, group="Regime Detection")
+vol_crisis_threshold = input.float(0.50, "Crisis Vol Threshold", minval=0.30, maxval=1.00, group="Regime Detection")
+
+// Trading Filters
+regime_confidence_min = input.float(0.60, "Min Regime Confidence", minval=0.50, maxval=0.85, group="Regime Filters")
+regime_stability_min = input.float(0.55, "Min Regime Stability", minval=0.50, maxval=0.80, group="Regime Filters")
+
+// Regime Trading Permissions
+allow_bull_regime = input.bool(true, "Trade in BULL Regime", group="Regime Permissions")
+allow_bear_regime = input.bool(true, "Trade in BEAR Regime", group="Regime Permissions")
+allow_highvol_regime = input.bool(false, "Trade in HIGH VOL Regime", group="Regime Permissions")
+allow_lowvol_regime = input.bool(true, "Trade in LOW VOL Regime", group="Regime Permissions")
+allow_crisis_regime = input.bool(false, "Trade in CRISIS Regime", group="Regime Permissions")
+
+// Display
+show_regime_bg = input.bool(true, "Show Regime Background", group="Display")
+show_regime_info = input.bool(true, "Show Regime Info", group="Display")
+
+// ============================================================================
+// BACKTEST WINDOW
+// ============================================================================
+
+fromDay = input(1, title="From Day", group="Backtest Window")
+fromMonth = input(1, title="From Month", group="Backtest Window")
+fromYear = input(1975, title="From Year", group="Backtest Window")
+toDay = input(1, title="To Day", group="Backtest Window")
+toMonth = input(1, title="To Month", group="Backtest Window")
+toYear = input(2027, title="To Year", group="Backtest Window")
+
+startDate = timestamp(fromYear, fromMonth, fromDay, 00, 00)
+finishDate = timestamp(toYear, toMonth, toDay, 00, 00)
+time_cond = time >= startDate and time <= finishDate
+
+// ============================================================================
+// RSI OF RSI CALCULATION
+// ============================================================================
+
+rsi = ta.rsi(Can_Source, Magic_Num)
+rsi2 = ta.rsi(rsi, Magic_Num1)
+
+// ============================================================================
+// REGIME DETECTION (FA-HMM)
+// ============================================================================
+
+// Volatility Analysis
+calc_realized_vol(lookback) =>
+    returns = close[1] > 0 ? math.log(close / close[1]) : 0.0
+    vol = ta.stdev(returns, lookback) * math.sqrt(252)
+    vol
+
+calc_garch_forecast() =>
+    returns = close[1] > 0 ? math.log(close / close[1]) : 0.0
+    returns_sq = returns * returns
+    alpha = 0.10
+    beta = 0.85
+    var float cond_var = na
+    if na(cond_var) or bar_index < 25
+        base_var = ta.variance(returns, 20)
+        cond_var := na(base_var) or base_var <= 0 ? 0.0001 : base_var
+    else
+        base_var = ta.variance(returns, 20)
+        base_var := na(base_var) or base_var <= 0 ? 0.0001 : base_var
+        lag_returns_sq = na(returns_sq[1]) ? 0.0 : returns_sq[1]
+        lag_cond_var = na(cond_var[1]) ? base_var : cond_var[1]
+        cond_var := (1 - alpha - beta) * base_var + alpha * lag_returns_sq + beta * lag_cond_var
+        cond_var := math.max(cond_var, 0.0001)
+    forecast_vol = math.sqrt(math.max(cond_var, 0.0001)) * math.sqrt(252)
+    forecast_vol
+
+vol_fast = calc_realized_vol(vol_lookback_fast)
+vol_med = calc_realized_vol(vol_lookback_med)
+vol_slow = calc_realized_vol(vol_lookback_slow)
+garch_vol = calc_garch_forecast()
+
+vol_regime = garch_vol < vol_low_threshold ? 1 : garch_vol < vol_high_threshold ? 2 : garch_vol < vol_crisis_threshold ? 3 : 4
+
+// Momentum and Trend Factors
+mom_fast = ta.roc(close, 10)
+mom_med = ta.roc(close, 20)
+mom_slow = ta.roc(close, 60)
+mom_score = (mom_fast + mom_med + mom_slow) / 3.0
+
+price_trend_fast = ta.ema(close, 20)
+price_trend_slow = ta.ema(close, 50)
+trend_alignment = (price_trend_fast - price_trend_slow) / price_trend_slow
+
+var float running_max = close
+running_max := math.max(close, running_max)
+drawdown = (close - running_max) / running_max
+
+// Regime Scoring
+score_bull_emissions() =>
+    score = 0.0
+    if vol_regime == 1
+        score += 3.0
+    else if vol_regime == 2
+        score += 1.0
+    if mom_score > 0.05
+        score += 3.0
+    else if mom_score > 0
+        score += 1.0
+    if trend_alignment > 0.05
+        score += 2.0
+    if drawdown > -0.05
+        score += 2.0
+    score
+
+score_bear_emissions() =>
+    score = 0.0
+    if vol_regime >= 2
+        score += 2.0
+    if mom_score < -0.05
+        score += 3.0
+    else if mom_score < 0
+        score += 1.0
+    if trend_alignment < -0.05
+        score += 2.0
+    if drawdown < -0.10
+        score += 3.0
+    score
+
+score_highvol_emissions() =>
+    score = 0.0
+    if vol_regime == 3
+        score += 4.0
+    else if vol_regime == 2
+        score += 2.0
+    if math.abs(mom_score) < 0.05
+        score += 1.0
+    score
+
+score_lowvol_emissions() =>
+    score = 0.0
+    if vol_regime == 1
+        score += 4.0
+    if math.abs(mom_score) < 0.03
+        score += 2.0
+    score
+
+score_crisis_emissions() =>
+    score = 0.0
+    if vol_regime == 4
+        score += 5.0
+    if drawdown < -0.20
+        score += 3.0
+    if mom_score < -0.30
+        score += 3.0
+    score
+
+bull_emissions = score_bull_emissions()
+bear_emissions = score_bear_emissions()
+highvol_emissions = score_highvol_emissions()
+lowvol_emissions = score_lowvol_emissions()
+crisis_emissions = score_crisis_emissions()
+
+total_emissions = bull_emissions + bear_emissions + highvol_emissions + lowvol_emissions + crisis_emissions
+bull_prob = total_emissions > 0 ? bull_emissions / total_emissions : 0.2
+bear_prob = total_emissions > 0 ? bear_emissions / total_emissions : 0.2
+highvol_prob = total_emissions > 0 ? highvol_emissions / total_emissions : 0.2
+lowvol_prob = total_emissions > 0 ? lowvol_emissions / total_emissions : 0.2
+crisis_prob = total_emissions > 0 ? crisis_emissions / total_emissions : 0.2
+
+// Determine Regime
+var int current_regime = 1
+var int regime_duration = 0
+min_regime_duration = 5
+transition_smoothing = 0.15
+
+raw_regime = bull_prob >= bear_prob and bull_prob >= highvol_prob and bull_prob >= lowvol_prob and bull_prob >= crisis_prob ? 1 : bear_prob >= highvol_prob and bear_prob >= lowvol_prob and bear_prob >= crisis_prob ? 2 : highvol_prob >= lowvol_prob and highvol_prob >= crisis_prob ? 3 : lowvol_prob >= crisis_prob ? 4 : 5
+
+transition_barrier = transition_smoothing * 0.10
+regime_switch_score = raw_regime == 1 ? bull_prob : raw_regime == 2 ? bear_prob : raw_regime == 3 ? highvol_prob : raw_regime == 4 ? lowvol_prob : crisis_prob
+current_regime_score = current_regime == 1 ? bull_prob : current_regime == 2 ? bear_prob : current_regime == 3 ? highvol_prob : current_regime == 4 ? lowvol_prob : crisis_prob
+
+regime_should_switch = regime_switch_score > current_regime_score + transition_barrier and regime_duration >= min_regime_duration
+
+if regime_should_switch
+    current_regime := raw_regime
+    regime_duration := 0
+else
+    regime_duration += 1
+
+regime_stability = math.min(0.95, 0.50 + regime_duration / 100.0)
+
+// Confidence Calculation
+calc_confidence() =>
+    probs = array.from(bull_prob, bear_prob, highvol_prob, lowvol_prob, crisis_prob)
+    entropy = 0.0
+    for prob in probs
+        if prob > 0.001
+            entropy := entropy - prob * math.log(prob)
+    max_entropy = math.log(5.0)
+    confidence = 1.0 - (entropy / max_entropy)
+    confidence
+
+confidence = calc_confidence()
+
+regime_name = current_regime == 1 ? "BULL" : current_regime == 2 ? "BEAR" : current_regime == 3 ? "HIGH VOL" : current_regime == 4 ? "LOW VOL" : "CRISIS"
+
+// ============================================================================
+// REGIME FILTER LOGIC
+// ============================================================================
+
+regime_allows_long = (current_regime == 1 and allow_bull_regime) or (current_regime == 2 and allow_bear_regime) or (current_regime == 3 and allow_highvol_regime) or (current_regime == 4 and allow_lowvol_regime) or (current_regime == 5 and allow_crisis_regime)
+
+regime_allows_short = (current_regime == 1 and allow_bull_regime) or (current_regime == 2 and allow_bear_regime) or (current_regime == 3 and allow_highvol_regime) or (current_regime == 4 and allow_lowvol_regime) or (current_regime == 5 and allow_crisis_regime)
+
+regime_quality_ok = confidence > regime_confidence_min and regime_stability > regime_stability_min
+
+regime_filter_long = not use_regime_filter or (regime_allows_long and regime_quality_ok)
+regime_filter_short = not use_regime_filter or (regime_allows_short and regime_quality_ok)
+
+// ============================================================================
+// TRADING CONDITIONS
+// ============================================================================
+
+// Mode Filters
+can_go_long = trading_mode == "Long Only" or trading_mode == "Both"
+can_go_short = trading_mode == "Short Only" or trading_mode == "Both"
+
+// Entry Conditions (RSI of RSI + Regime Filter)
+LongEntryCond = rsi2 < LongEntryLimit and time_cond and can_go_long and regime_filter_long
+LongCloseCond = rsi2 > LongEntryTP
+
+ShortEntryCond = rsi2 > ShortEntryLimit and time_cond and can_go_short and regime_filter_short
+ShortCloseCond = rsi2 < ShortEntryTP
+
+// ============================================================================
+// TRADE EXECUTION
+// ============================================================================
+
+if ShortEntryCond
+    strategy.entry("Short", strategy.short)
+if ShortCloseCond
+    strategy.close("Short")
+
+if LongEntryCond
+    strategy.entry("Long", strategy.long)
+if LongCloseCond
+    strategy.close("Long")
+
+// ============================================================================
+// VISUALIZATION
+// ============================================================================
+
+// Regime Background
+regime_color = current_regime == 1 ? color.new(color.green, 90) : current_regime == 2 ? color.new(color.red, 90) : current_regime == 3 ? color.new(color.orange, 90) : current_regime == 4 ? color.new(color.blue, 90) : color.new(color.purple, 90)
+bgcolor(show_regime_bg ? regime_color : na)
+
+// RSI of RSI Plot
+plot(rsi2, color=color.white, linewidth=2, title="RSI of RSI")
+hline(50, color=color.rgb(255, 255, 255, 53), linestyle=hline.style_dashed)
+hline(100, color=color.rgb(255, 255, 255, 72), linestyle=hline.style_dashed)
+hline(0, color=color.rgb(255, 255, 255, 72), linestyle=hline.style_dashed)
+
+BackGroundColor = rsi2 < 100 and rsi2 > 0 ? color.rgb(19, 50, 75, 63) : na
+bgcolor(BackGroundColor)
+
+// Info Table
+var table info_table = table.new(position.top_right, 2, 8, border_width=1, border_color=color.gray)
+
+if barstate.islast and show_regime_info
+    table.cell(info_table, 0, 0, "MirrorBot + Regime", bgcolor=color.new(color.gray, 70), text_color=color.white)
+    table.merge_cells(info_table, 0, 0, 1, 0)
+
+    regime_color_solid = current_regime == 1 ? color.green : current_regime == 2 ? color.red : current_regime == 3 ? color.orange : current_regime == 4 ? color.blue : color.purple
+    table.cell(info_table, 0, 1, "Regime", bgcolor=color.new(color.gray, 90))
+    table.cell(info_table, 1, 1, regime_name, bgcolor=color.new(regime_color_solid, 80), text_color=color.white)
+
+    table.cell(info_table, 0, 2, "Confidence", bgcolor=color.new(color.gray, 90))
+    conf_color = confidence > 0.70 ? color.green : confidence > 0.60 ? color.orange : color.red
+    table.cell(info_table, 1, 2, str.tostring(confidence * 100, "#.0") + "%", text_color=conf_color)
+
+    table.cell(info_table, 0, 3, "Stability", bgcolor=color.new(color.gray, 90))
+    table.cell(info_table, 1, 3, str.tostring(regime_stability * 100, "#.0") + "%")
+
+    table.cell(info_table, 0, 4, "RSI of RSI", bgcolor=color.new(color.gray, 90))
+    rsi_color = rsi2 < 40 ? color.green : rsi2 > 60 ? color.red : color.gray
+    table.cell(info_table, 1, 4, str.tostring(rsi2, "#.1"), text_color=rsi_color)
+
+    table.cell(info_table, 0, 5, "Filter Active", bgcolor=color.new(color.gray, 90))
+    table.cell(info_table, 1, 5, use_regime_filter ? "YES" : "NO", text_color=use_regime_filter ? color.green : color.gray)
+
+    table.cell(info_table, 0, 6, "Can Long", bgcolor=color.new(color.gray, 90))
+    table.cell(info_table, 1, 6, regime_filter_long ? "✓" : "✗", text_color=regime_filter_long ? color.green : color.red)
+
+    table.cell(info_table, 0, 7, "Can Short", bgcolor=color.new(color.gray, 90))
+    table.cell(info_table, 1, 7, regime_filter_short ? "✓" : "✗", text_color=regime_filter_short ? color.green : color.red)
+
+// ============================================================================
+// ALERTS
+// ============================================================================
+
+alertcondition(LongEntryCond, title="MirrorBot Long Entry", message="RSI of RSI Long + Regime Filter OK")
+alertcondition(ShortEntryCond, title="MirrorBot Short Entry", message="RSI of RSI Short + Regime Filter OK")
+alertcondition(current_regime != current_regime[1], title="Regime Change", message="Market regime changed to " + regime_name)
