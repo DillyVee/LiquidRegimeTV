@@ -76,8 +76,9 @@ calc_roc(lookback) =>
 
 // Calculate current drawdown
 calc_drawdown() =>
-    cummax = ta.cum(math.max(close, nz(cummax[1], close)))
-    dd = (close - cummax) / cummax
+    var float peak = close
+    peak := math.max(close, nz(peak, close))
+    dd = (close - peak) / peak
     dd
 
 // Calculate max drawdown over period
@@ -247,11 +248,7 @@ transition_prob := math.min(0.95, 0.5 + (regime_duration / 100.0))
 
 // Base position sizes by regime
 regime_base_size(r) =>
-    r == 1 ? 1.2 :  // BULL: 120%
-    r == 2 ? 0.5 :  // BEAR: 50%
-    r == 3 ? 0.6 :  // HIGH_VOL: 60%
-    r == 4 ? 1.0 :  // LOW_VOL: 100%
-    0.2             // CRISIS: 20%
+    r == 1 ? 1.2 : r == 2 ? 0.5 : r == 3 ? 0.6 : r == 4 ? 1.0 : 0.2
 
 base_size = regime_base_size(regime)
 
