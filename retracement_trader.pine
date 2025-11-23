@@ -187,6 +187,23 @@ level_78_6 = calc_retracement(78.6)
 // Store the ATH at entry for take profit target
 var float entry_ath = na
 
+// Track which entry levels have been used since current ATH
+var bool entry_1_used = false
+var bool entry_2_used = false
+var bool entry_3_used = false
+var bool entry_4_used = false
+var bool entry_5_used = false
+var bool entry_6_used = false
+
+// Reset entry level usage when ATH changes (new all-time high)
+if ath != ath[1] and not na(ath[1])
+    entry_1_used := false
+    entry_2_used := false
+    entry_3_used := false
+    entry_4_used := false
+    entry_5_used := false
+    entry_6_used := false
+
 // ============================================================================
 // TRADING LOGIC
 // ============================================================================
@@ -196,18 +213,32 @@ can_long = trading_mode == "Long Only" or trading_mode == "Both"
 can_short = trading_mode == "Short Only" or trading_mode == "Both"
 
 // Long Entry: Trigger on crossunder through ANY enabled entry level (retraced from ATH)
-long_entry_1 = enable_long_entry_1 and ta.crossunder(close, long_entry_price_1)
-long_entry_2 = enable_long_entry_2 and ta.crossunder(close, long_entry_price_2)
-long_entry_3 = enable_long_entry_3 and ta.crossunder(close, long_entry_price_3)
-long_entry_4 = enable_long_entry_4 and ta.crossunder(close, long_entry_price_4)
-long_entry_5 = enable_long_entry_5 and ta.crossunder(close, long_entry_price_5)
-long_entry_6 = enable_long_entry_6 and ta.crossunder(close, long_entry_price_6)
+// Only trigger if level hasn't been used since current ATH
+long_entry_1 = enable_long_entry_1 and not entry_1_used and ta.crossunder(close, long_entry_price_1)
+long_entry_2 = enable_long_entry_2 and not entry_2_used and ta.crossunder(close, long_entry_price_2)
+long_entry_3 = enable_long_entry_3 and not entry_3_used and ta.crossunder(close, long_entry_price_3)
+long_entry_4 = enable_long_entry_4 and not entry_4_used and ta.crossunder(close, long_entry_price_4)
+long_entry_5 = enable_long_entry_5 and not entry_5_used and ta.crossunder(close, long_entry_price_5)
+long_entry_6 = enable_long_entry_6 and not entry_6_used and ta.crossunder(close, long_entry_price_6)
 
 long_entry_condition = (long_entry_1 or long_entry_2 or long_entry_3 or long_entry_4 or long_entry_5 or long_entry_6) and can_long
 
-// Store ATH when we enter the position
+// Store ATH and mark entry level as used when we enter the position
 if long_entry_condition and strategy.position_size == 0
     entry_ath := ath
+    // Mark which level was used
+    if long_entry_1
+        entry_1_used := true
+    if long_entry_2
+        entry_2_used := true
+    if long_entry_3
+        entry_3_used := true
+    if long_entry_4
+        entry_4_used := true
+    if long_entry_5
+        entry_5_used := true
+    if long_entry_6
+        entry_6_used := true
 
 // Long Exit: Crossover back to stored ATH (take profit) OR crossunder below exit level (stop-loss)
 long_exit_tp = strategy.position_size > 0 and ta.crossover(close, entry_ath)  // TP: Cross back above stored ATH
