@@ -304,12 +304,12 @@ regime_stable = regime_dur >= min_switch_duration
 force_switch = cusum_detect
 
 // Regime switch decision
-if force_switch and regime_dur >= 1
-    // CUSUM forces immediate switch
+if force_switch
+    // CUSUM forces immediate switch (even if regime_dur = 0)
     current_regime := regime_map
     regime_dur := min_switch_duration  // grant stability immediately
 else if regime_map != current_regime and regime_stable
-    // Stable switch allowed
+    // Stable switch allowed (only after stability period)
     current_regime := regime_map
 // Note: regime_dur continues incrementing as long as regime_map == current_regime
 
@@ -494,12 +494,19 @@ if show_table and barstate.islast
     table.cell(t, 1, 18, str.tostring(strategy.netprofit, "#,###"), text_color=pnl_color)
 
 // ============================================================================
-// ALERTS
+// ALERTS (Using alert() for strategies, not alertcondition())
 // ============================================================================
-alertcondition(long_entry_cond, "Long Entry", "MB Power V2: Long Entry")
-alertcondition(short_entry_cond, "Short Entry", "MB Power V2: Short Entry")
-alertcondition(cusum_detect, "CUSUM Change", "CUSUM change-point detected")
-alertcondition(final_regime != final_regime[1], "Regime Change", "Regime changed to {{plot_0}}")
+if long_entry_cond
+    alert("MB Power V2: Long Entry - RSI2=" + str.tostring(rsi2, "#.1") + " Regime=" + regime_name, alert.freq_once_per_bar_close)
+
+if short_entry_cond
+    alert("MB Power V2: Short Entry - RSI2=" + str.tostring(rsi2, "#.1") + " Regime=" + regime_name, alert.freq_once_per_bar_close)
+
+if cusum_detect
+    alert("MB Power V2: CUSUM change-point detected - Volatility regime shift", alert.freq_once_per_bar_close)
+
+if final_regime != final_regime[1]
+    alert("MB Power V2: Regime changed to " + regime_name + " (confidence=" + str.tostring(confidence * 100, "#.0") + "%)", alert.freq_once_per_bar_close)
 
 // ============================================================================
 // END - POWER EDITION V2 - PRODUCTION READY
