@@ -241,13 +241,14 @@ if long_entry_condition and strategy.position_size == 0
         entry_6_used := true
 
 // Long Exit: Crossover back to stored ATH (take profit) OR crossunder below exit level (stop-loss)
+// IMPORTANT: Only check exits when we have a position
 long_exit_tp = strategy.position_size > 0 and ta.crossover(close, entry_ath)  // TP: Cross back above stored ATH
-long_exit_1 = enable_long_exit_1 and ta.crossunder(close, long_exit_price_1)  // SL: Cross below stop level
-long_exit_2 = enable_long_exit_2 and ta.crossunder(close, long_exit_price_2)
-long_exit_3 = enable_long_exit_3 and ta.crossunder(close, long_exit_price_3)
-long_exit_4 = enable_long_exit_4 and ta.crossunder(close, long_exit_price_4)
-long_exit_5 = enable_long_exit_5 and ta.crossunder(close, long_exit_price_5)
-long_exit_6 = enable_long_exit_6 and ta.crossunder(close, long_exit_price_6)
+long_exit_1 = strategy.position_size > 0 and enable_long_exit_1 and ta.crossunder(close, long_exit_price_1)  // SL: Cross below stop level
+long_exit_2 = strategy.position_size > 0 and enable_long_exit_2 and ta.crossunder(close, long_exit_price_2)
+long_exit_3 = strategy.position_size > 0 and enable_long_exit_3 and ta.crossunder(close, long_exit_price_3)
+long_exit_4 = strategy.position_size > 0 and enable_long_exit_4 and ta.crossunder(close, long_exit_price_4)
+long_exit_5 = strategy.position_size > 0 and enable_long_exit_5 and ta.crossunder(close, long_exit_price_5)
+long_exit_6 = strategy.position_size > 0 and enable_long_exit_6 and ta.crossunder(close, long_exit_price_6)
 
 long_exit_sl = long_exit_1 or long_exit_2 or long_exit_3 or long_exit_4 or long_exit_5 or long_exit_6
 
