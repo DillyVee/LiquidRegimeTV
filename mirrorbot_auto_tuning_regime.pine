@@ -14,7 +14,7 @@ strategy("MirrorBot Auto-Tuning FA-HMM",
 // ============================================================================
 
 trading_mode = input.string("Both", "Trading Mode", options=["Long Only", "Short Only", "Both"], group="Trading Mode")
-use_regime_filter = input.bool(true, "Use Regime Filter", group="Trading Mode", tooltip="Filter trades by market regime (disable for more frequent trading)")
+use_regime_filter = input.bool(false, "Use Regime Filter", group="Trading Mode", tooltip="Filter trades by market regime (disable for more frequent trading)")
 
 // RSI of RSI Settings (MirrorBot Entry Logic)
 Can_Source = input.source(hlc3, "Source", group="RSI Settings")
@@ -39,9 +39,9 @@ vol_med_init = input.int(20, "Initial Vol Med", minval=10, maxval=40, group="Ini
 vol_slow_init = input.int(60, "Initial Vol Slow", minval=30, maxval=100, group="Initial Parameters")
 cusum_thresh_init = input.float(3.0, "Initial CUSUM Threshold", minval=2.0, maxval=4.0, group="Initial Parameters")
 cusum_drift_init = input.float(0.5, "Initial CUSUM Drift", minval=0.3, maxval=0.7, group="Initial Parameters")
-min_duration_init = input.int(3, "Initial Min Duration", minval=1, maxval=15, group="Initial Parameters")
-conf_thresh_init = input.float(0.50, "Initial Confidence Thresh", minval=0.40, maxval=0.75, group="Initial Parameters")
-stab_thresh_init = input.float(0.50, "Initial Stability Thresh", minval=0.40, maxval=0.70, group="Initial Parameters")
+min_duration_init = input.int(1, "Initial Min Duration", minval=1, maxval=15, group="Initial Parameters")
+conf_thresh_init = input.float(0.40, "Initial Confidence Thresh", minval=0.30, maxval=0.75, group="Initial Parameters")
+stab_thresh_init = input.float(0.40, "Initial Stability Thresh", minval=0.30, maxval=0.70, group="Initial Parameters")
 
 // Regime Trading Permissions
 allow_bull_regime = input.bool(true, "Trade in BULL Regime", group="Regime Permissions")
@@ -399,7 +399,7 @@ regime_allows_long = (current_regime == 1 and allow_bull_regime) or (current_reg
 // SHORTS: Favor BEAR, HIGH VOL, and CRISIS regimes
 regime_allows_short = (current_regime == 2 and allow_bear_regime) or (current_regime == 3 and allow_highvol_regime) or (current_regime == 5 and allow_crisis_regime)
 
-regime_quality_ok = confidence > confidence_threshold and regime_stability > stability_threshold
+regime_quality_ok = confidence >= confidence_threshold and regime_stability >= stability_threshold
 
 regime_filter_long = not use_regime_filter or (regime_allows_long and regime_quality_ok)
 regime_filter_short = not use_regime_filter or (regime_allows_short and regime_quality_ok)
@@ -466,7 +466,8 @@ if barstate.islast and show_info_table
     table.cell(info_table, 1, 2, regime_name, bgcolor=color.new(regime_color_solid, 80), text_color=color.white)
 
     table.cell(info_table, 0, 3, "Filter Active", bgcolor=color.new(color.gray, 90))
-    table.cell(info_table, 1, 3, use_regime_filter ? "YES" : "NO", text_color=use_regime_filter ? color.green : color.gray)
+    filter_status = use_regime_filter ? "YES" : "NO (TRADING FREELY)"
+    table.cell(info_table, 1, 3, filter_status, text_color=use_regime_filter ? color.orange : color.green)
 
     table.cell(info_table, 0, 4, "Performance", bgcolor=color.new(color.gray, 70), text_color=color.white)
     table.merge_cells(info_table, 0, 4, 1, 4)
