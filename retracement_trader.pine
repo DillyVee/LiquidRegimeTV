@@ -198,13 +198,13 @@ long_entry_6 = enable_long_entry_6 and ta.crossunder(close, long_entry_price_6)
 
 long_entry_condition = (long_entry_1 or long_entry_2 or long_entry_3 or long_entry_4 or long_entry_5 or long_entry_6) and can_long
 
-// Long Exit: Trigger when price crosses UP through ANY enabled exit level OR when new ATH is made
-long_exit_1 = enable_long_exit_1 and ta.crossover(close, long_exit_price_1)
-long_exit_2 = enable_long_exit_2 and ta.crossover(close, long_exit_price_2)
-long_exit_3 = enable_long_exit_3 and ta.crossover(close, long_exit_price_3)
-long_exit_4 = enable_long_exit_4 and ta.crossover(close, long_exit_price_4)
-long_exit_5 = enable_long_exit_5 and ta.crossover(close, long_exit_price_5)
-long_exit_6 = enable_long_exit_6 and ta.crossover(close, long_exit_price_6)
+// Long Exit: Trigger when price crosses DOWN through ANY enabled exit level (stop-loss) OR when new ATH is made
+long_exit_1 = enable_long_exit_1 and ta.crossunder(close, long_exit_price_1)
+long_exit_2 = enable_long_exit_2 and ta.crossunder(close, long_exit_price_2)
+long_exit_3 = enable_long_exit_3 and ta.crossunder(close, long_exit_price_3)
+long_exit_4 = enable_long_exit_4 and ta.crossunder(close, long_exit_price_4)
+long_exit_5 = enable_long_exit_5 and ta.crossunder(close, long_exit_price_5)
+long_exit_6 = enable_long_exit_6 and ta.crossunder(close, long_exit_price_6)
 
 // Detect when ATH changes (new all-time high)
 ath_changed = ath != ath[1] and not na(ath[1])
