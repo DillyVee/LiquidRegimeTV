@@ -1,6 +1,6 @@
 //@version=5
 strategy("LiquidUI - Institutional Regime Detection Strategy",
-         shorttitle="Regime Strategy",
+         shorttitle="Reg Strat",
          overlay=true,
          initial_capital=100000,
          default_qty_type=strategy.percent_of_equity,
