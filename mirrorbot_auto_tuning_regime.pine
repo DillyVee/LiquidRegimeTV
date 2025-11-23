@@ -1,0 +1,529 @@
+//@version=5
+strategy("MirrorBot Auto-Tuning FA-HMM",
+         shorttitle="MirrorBot Auto-Tune",
+         overlay=true,
+         initial_capital=100000,
+         default_qty_type=strategy.percent_of_equity,
+         default_qty_value=100,
+         commission_type=strategy.commission.percent,
+         commission_value=0.1,
+         slippage=2)
+
+// ============================================================================
+// TRADING MODE & RSI SETTINGS
+// ============================================================================
+
+trading_mode = input.string("Both", "Trading Mode", options=["Long Only", "Short Only", "Both"], group="Trading Mode")
+use_regime_filter = input.bool(true, "Use Regime Filter", group="Trading Mode", tooltip="Filter trades by market regime (disable for more frequent trading)")
+
+// RSI of RSI Settings (MirrorBot Entry Logic)
+Can_Source = input.source(hlc3, "Source", group="RSI Settings")
+Magic_Num = input(9, "Magic Number 1 (RSI Period)", group="RSI Settings")
+Magic_Num1 = input(144, "Magic Number 2 (RSI of RSI Period)", group="RSI Settings")
+LongEntryLimit = input.float(49.9, "Long Entry Value", minval=0, maxval=100, step=0.01, group="RSI Settings")
+LongEntryTP = input.float(50, "Long TP Value", minval=0, maxval=100, step=0.01, group="RSI Settings")
+ShortEntryLimit = input.float(50.1, "Short Entry Value", minval=0, maxval=100, step=0.01, group="RSI Settings")
+ShortEntryTP = input.float(50, "Short TP Value", minval=0, maxval=100, step=0.01, group="RSI Settings")
+
+// ============================================================================
+// AUTO-TUNING SYSTEM
+// ============================================================================
+
+enable_auto_tuning = input.bool(true, "Enable Auto-Tuning", group="Auto-Tuning System", tooltip="Automatically adjusts regime parameters based on performance")
+tuning_aggressiveness = input.float(0.05, "Tuning Aggressiveness", minval=0.01, maxval=0.20, step=0.01, group="Auto-Tuning System")
+performance_lookback = input.int(20, "Performance Lookback Trades", minval=10, maxval=50, group="Auto-Tuning System")
+
+// Initial Parameter Values (will be auto-adjusted)
+vol_fast_init = input.int(10, "Initial Vol Fast", minval=5, maxval=20, group="Initial Parameters")
+vol_med_init = input.int(20, "Initial Vol Med", minval=10, maxval=40, group="Initial Parameters")
+vol_slow_init = input.int(60, "Initial Vol Slow", minval=30, maxval=100, group="Initial Parameters")
+cusum_thresh_init = input.float(3.0, "Initial CUSUM Threshold", minval=2.0, maxval=4.0, group="Initial Parameters")
+cusum_drift_init = input.float(0.5, "Initial CUSUM Drift", minval=0.3, maxval=0.7, group="Initial Parameters")
+min_duration_init = input.int(5, "Initial Min Duration", minval=3, maxval=15, group="Initial Parameters")
+conf_thresh_init = input.float(0.60, "Initial Confidence Thresh", minval=0.50, maxval=0.75, group="Initial Parameters")
+stab_thresh_init = input.float(0.55, "Initial Stability Thresh", minval=0.50, maxval=0.70, group="Initial Parameters")
+
+// Regime Trading Permissions
+allow_bull_regime = input.bool(true, "Trade in BULL Regime", group="Regime Permissions")
+allow_bear_regime = input.bool(true, "Trade in BEAR Regime", group="Regime Permissions")
+allow_highvol_regime = input.bool(true, "Trade in HIGH VOL Regime", group="Regime Permissions")
+allow_lowvol_regime = input.bool(true, "Trade in LOW VOL Regime", group="Regime Permissions")
+allow_crisis_regime = input.bool(false, "Trade in CRISIS Regime", group="Regime Permissions")
+
+// Display
+show_regime_bg = input.bool(true, "Show Regime Background", group="Display")
+show_info_table = input.bool(true, "Show Info Table", group="Display")
+show_tuning_params = input.bool(true, "Show Tuning Parameters", group="Display")
+
+// ============================================================================
+// RSI OF RSI CALCULATION (MirrorBot Entry Logic)
+// ============================================================================
+
+rsi = ta.rsi(Can_Source, Magic_Num)
+rsi2 = ta.rsi(rsi, Magic_Num1)
+
+// ============================================================================
+// ADAPTIVE PARAMETER STORAGE
+// ============================================================================
+
+var float vol_fast_adaptive = vol_fast_init
+var float vol_med_adaptive = vol_med_init
+var float vol_slow_adaptive = vol_slow_init
+var float vol_low_threshold = 0.10
+var float vol_high_threshold = 0.25
+var float vol_crisis_threshold = 0.50
+var float cusum_threshold_adaptive = cusum_thresh_init
+var float cusum_drift_adaptive = cusum_drift_init
+var float min_regime_duration_adaptive = min_duration_init
+var float transition_smoothing_adaptive = 0.15
+var float confidence_threshold_adaptive = conf_thresh_init
+var float stability_threshold_adaptive = stab_thresh_init
+
+// ============================================================================
+// PERFORMANCE TRACKING
+// ============================================================================
+
+var array<float> recent_pnl = array.new_float()
+var int total_trades_tracked = 0
+var float cumulative_profit = 0.0
+var int winning_trades = 0
+var int losing_trades = 0
+
+calc_performance_metrics() =>
+    if strategy.closedtrades > total_trades_tracked
+        last_trade_pnl = strategy.netprofit - cumulative_profit
+
+        if last_trade_pnl > 0
+            winning_trades += 1
+        else if last_trade_pnl < 0
+            losing_trades += 1
+
+        cumulative_profit := strategy.netprofit
+        total_trades_tracked += 1
+
+        total_closed = winning_trades + losing_trades
+        current_win_rate = total_closed > 0 ? winning_trades / total_closed : 0.0
+
+        array.push(recent_pnl, last_trade_pnl)
+        if array.size(recent_pnl) > performance_lookback
+            array.shift(recent_pnl)
+
+        avg_recent_pnl = array.size(recent_pnl) > 0 ? array.avg(recent_pnl) : 0.0
+        perf_score = current_win_rate * 0.5 + (avg_recent_pnl > 0 ? 0.5 : 0.0)
+
+        [last_trade_pnl, current_win_rate, avg_recent_pnl, perf_score]
+    else
+        total_closed = winning_trades + losing_trades
+        current_win_rate = total_closed > 0 ? winning_trades / total_closed : 0.0
+        avg_recent_pnl = array.size(recent_pnl) > 0 ? array.avg(recent_pnl) : 0.0
+        perf_score = current_win_rate * 0.5 + (avg_recent_pnl > 0 ? 0.5 : 0.0)
+        [0.0, current_win_rate, avg_recent_pnl, perf_score]
+
+[last_pnl, win_rate, avg_pnl, performance_score] = calc_performance_metrics()
+
+// ============================================================================
+// AUTO-TUNING LOGIC
+// ============================================================================
+
+if enable_auto_tuning and strategy.closedtrades > 5
+    adjustment_factor = tuning_aggressiveness
+
+    if performance_score < 0.45
+        confidence_threshold_adaptive := math.min(0.80, confidence_threshold_adaptive * (1.0 + adjustment_factor))
+        stability_threshold_adaptive := math.min(0.75, stability_threshold_adaptive * (1.0 + adjustment_factor))
+        cusum_threshold_adaptive := math.min(4.5, cusum_threshold_adaptive * (1.0 + adjustment_factor * 0.5))
+        min_regime_duration_adaptive := math.min(20, min_regime_duration_adaptive * (1.0 + adjustment_factor))
+        vol_fast_adaptive := math.min(20, vol_fast_adaptive * (1.0 + adjustment_factor))
+
+    else if performance_score > 0.60
+        confidence_threshold_adaptive := math.max(0.50, confidence_threshold_adaptive * (1.0 - adjustment_factor))
+        stability_threshold_adaptive := math.max(0.50, stability_threshold_adaptive * (1.0 - adjustment_factor))
+        cusum_threshold_adaptive := math.max(2.0, cusum_threshold_adaptive * (1.0 - adjustment_factor * 0.5))
+        min_regime_duration_adaptive := math.max(3, min_regime_duration_adaptive * (1.0 - adjustment_factor))
+        vol_fast_adaptive := math.max(5, vol_fast_adaptive * (1.0 - adjustment_factor))
+
+    if avg_pnl < 0 and win_rate < 0.45
+        vol_low_threshold := math.min(0.15, vol_low_threshold * (1.0 + adjustment_factor))
+        vol_high_threshold := math.min(0.35, vol_high_threshold * (1.0 + adjustment_factor))
+    else if avg_pnl > 0 and win_rate > 0.55
+        vol_low_threshold := math.max(0.08, vol_low_threshold * (1.0 - adjustment_factor))
+        vol_high_threshold := math.max(0.20, vol_high_threshold * (1.0 - adjustment_factor))
+
+vol_lookback_fast = math.round(vol_fast_adaptive)
+vol_lookback_med = math.round(vol_med_adaptive)
+vol_lookback_slow = math.round(vol_slow_adaptive)
+cusum_threshold = cusum_threshold_adaptive
+cusum_drift = cusum_drift_adaptive
+min_regime_duration = math.round(min_regime_duration_adaptive)
+transition_smoothing = transition_smoothing_adaptive
+confidence_threshold = confidence_threshold_adaptive
+stability_threshold = stability_threshold_adaptive
+
+// ============================================================================
+// VOLATILITY ANALYSIS (GARCH-Inspired)
+// ============================================================================
+
+calc_realized_vol(lookback) =>
+    returns = close[1] > 0 ? math.log(close / close[1]) : 0.0
+    vol = ta.stdev(returns, lookback) * math.sqrt(252)
+    vol
+
+calc_vol_of_vol(lookback) =>
+    returns = close[1] > 0 ? math.log(close / close[1]) : 0.0
+    vol = ta.stdev(returns, lookback)
+    vol_of_vol = ta.stdev(vol, lookback)
+    vol_of_vol
+
+calc_garch_forecast() =>
+    returns = close[1] > 0 ? math.log(close / close[1]) : 0.0
+    returns_sq = returns * returns
+    alpha = 0.10
+    beta = 0.85
+    var float cond_var = na
+    // Extract ta.variance call outside conditional scope for consistency
+    base_var = ta.variance(returns, 20)
+    base_var := na(base_var) or base_var <= 0 ? 0.0001 : base_var
+    if na(cond_var) or bar_index < 25
+        cond_var := base_var
+    else
+        lag_returns_sq = na(returns_sq[1]) ? 0.0 : returns_sq[1]
+        lag_cond_var = na(cond_var[1]) ? base_var : cond_var[1]
+        cond_var := (1 - alpha - beta) * base_var + alpha * lag_returns_sq + beta * lag_cond_var
+        cond_var := math.max(cond_var, 0.0001)
+    forecast_vol = math.sqrt(math.max(cond_var, 0.0001)) * math.sqrt(252)
+    forecast_vol
+
+vol_fast = calc_realized_vol(vol_lookback_fast)
+vol_med = calc_realized_vol(vol_lookback_med)
+vol_slow = calc_realized_vol(vol_lookback_slow)
+vol_of_vol = calc_vol_of_vol(20)
+garch_vol = calc_garch_forecast()
+
+vol_regime = garch_vol < vol_low_threshold ? 1 : garch_vol < vol_high_threshold ? 2 : garch_vol < vol_crisis_threshold ? 3 : 4
+
+calc_vol_clustering() =>
+    returns = close[1] > 0 ? math.log(close / close[1]) : 0.0
+    returns_sq = returns * returns
+    returns_sq_lag = returns_sq[1]
+    correlation = ta.correlation(returns_sq, returns_sq_lag, 20)
+    correlation
+
+vol_clustering = calc_vol_clustering()
+
+// ============================================================================
+// CUSUM CHANGE-POINT DETECTION
+// ============================================================================
+
+calc_cusum_statistic() =>
+    returns = close[1] > 0 ? ta.change(close) / close[1] : 0.0
+    if bar_index < 100
+        [0.0, 0.0]
+    else
+        mean_return = ta.sma(returns, 100)
+        std_return = ta.stdev(returns, 100)
+        std_return := na(std_return) or std_return <= 0 ? 0.01 : std_return
+        z_score = (returns - mean_return) / std_return
+        z_score := na(z_score) ? 0.0 : z_score
+        var float cusum_pos = 0.0
+        var float cusum_neg = 0.0
+        cusum_pos := math.max(0, cusum_pos[1] + z_score - cusum_drift)
+        cusum_neg := math.max(0, cusum_neg[1] - z_score - cusum_drift)
+        [cusum_pos, cusum_neg]
+
+[cusum_positive, cusum_negative] = calc_cusum_statistic()
+changepoint_detected = cusum_positive > cusum_threshold or cusum_negative > cusum_threshold
+
+// ============================================================================
+// FACTOR-AUGMENTED FEATURES
+// ============================================================================
+
+mom_fast = ta.roc(close, 10)
+mom_med = ta.roc(close, 20)
+mom_slow = ta.roc(close, 60)
+mom_score = (mom_fast + mom_med + mom_slow) / 3.0
+
+volume_ma = ta.sma(volume, 20)
+volume_ratio = volume / volume_ma
+volume_factor = math.log(volume_ratio)
+
+range_expansion = (high - low) / close
+range_ma = ta.sma(range_expansion, 20)
+microstructure_signal = range_expansion / range_ma - 1.0
+
+price_trend_fast = ta.ema(close, 20)
+price_trend_slow = ta.ema(close, 50)
+trend_alignment = (price_trend_fast - price_trend_slow) / price_trend_slow
+
+var float running_max = close
+running_max := math.max(close, running_max)
+drawdown = (close - running_max) / running_max
+
+// ============================================================================
+// REGIME SCORING (HMM-Inspired)
+// ============================================================================
+
+score_bull_emissions() =>
+    score = 0.0
+    if vol_regime == 1
+        score += 3.0
+    else if vol_regime == 2
+        score += 1.0
+    if mom_score > 0.05
+        score += 3.0
+    else if mom_score > 0
+        score += 1.0
+    if trend_alignment > 0.05
+        score += 2.0
+    if drawdown > -0.05
+        score += 2.0
+    if volume_factor > 0
+        score += 1.0
+    score
+
+score_bear_emissions() =>
+    score = 0.0
+    if vol_regime >= 2
+        score += 2.0
+    if mom_score < -0.05
+        score += 3.0
+    else if mom_score < 0
+        score += 1.0
+    if trend_alignment < -0.05
+        score += 2.0
+    if drawdown < -0.10
+        score += 3.0
+    score
+
+score_highvol_emissions() =>
+    score = 0.0
+    if vol_regime == 3
+        score += 4.0
+    else if vol_regime == 2
+        score += 2.0
+    if vol_clustering > 0.3
+        score += 2.0
+    if microstructure_signal > 0.5
+        score += 2.0
+    if math.abs(mom_score) < 0.05
+        score += 1.0
+    score
+
+score_lowvol_emissions() =>
+    score = 0.0
+    if vol_regime == 1
+        score += 4.0
+    if vol_of_vol < 0.05
+        score += 2.0
+    if math.abs(mom_score) < 0.03
+        score += 2.0
+    if microstructure_signal < 0
+        score += 1.0
+    score
+
+score_crisis_emissions() =>
+    score = 0.0
+    if vol_regime == 4
+        score += 5.0
+    if vol_of_vol > 0.10
+        score += 2.0
+    if drawdown < -0.20
+        score += 3.0
+    if mom_score < -0.30
+        score += 3.0
+    if volume_factor > 1.0
+        score += 2.0
+    score
+
+bull_emissions = score_bull_emissions()
+bear_emissions = score_bear_emissions()
+highvol_emissions = score_highvol_emissions()
+lowvol_emissions = score_lowvol_emissions()
+crisis_emissions = score_crisis_emissions()
+
+total_emissions = bull_emissions + bear_emissions + highvol_emissions + lowvol_emissions + crisis_emissions
+bull_prob = total_emissions > 0 ? bull_emissions / total_emissions : 0.2
+bear_prob = total_emissions > 0 ? bear_emissions / total_emissions : 0.2
+highvol_prob = total_emissions > 0 ? highvol_emissions / total_emissions : 0.2
+lowvol_prob = total_emissions > 0 ? lowvol_emissions / total_emissions : 0.2
+crisis_prob = total_emissions > 0 ? crisis_emissions / total_emissions : 0.2
+
+// ============================================================================
+// HMM ADAPTIVE TRANSITIONS
+// ============================================================================
+
+var int current_regime = 1
+var int regime_duration = 0
+
+raw_regime = bull_prob >= bear_prob and bull_prob >= highvol_prob and bull_prob >= lowvol_prob and bull_prob >= crisis_prob ? 1 : bear_prob >= highvol_prob and bear_prob >= lowvol_prob and bear_prob >= crisis_prob ? 2 : highvol_prob >= lowvol_prob and highvol_prob >= crisis_prob ? 3 : lowvol_prob >= crisis_prob ? 4 : 5
+
+transition_barrier = transition_smoothing * 0.10
+regime_switch_score = raw_regime == 1 ? bull_prob : raw_regime == 2 ? bear_prob : raw_regime == 3 ? highvol_prob : raw_regime == 4 ? lowvol_prob : crisis_prob
+current_regime_score = current_regime == 1 ? bull_prob : current_regime == 2 ? bear_prob : current_regime == 3 ? highvol_prob : current_regime == 4 ? lowvol_prob : crisis_prob
+
+regime_should_switch = regime_switch_score > current_regime_score + transition_barrier and regime_duration >= min_regime_duration
+
+if regime_should_switch or changepoint_detected
+    current_regime := raw_regime
+    regime_duration := 0
+else
+    regime_duration += 1
+
+regime_stability = math.min(0.95, 0.50 + regime_duration / 100.0)
+
+calc_confidence() =>
+    probs = array.from(bull_prob, bear_prob, highvol_prob, lowvol_prob, crisis_prob)
+    entropy = 0.0
+    for prob in probs
+        if prob > 0.001
+            entropy := entropy - prob * math.log(prob)
+    max_entropy = math.log(5.0)
+    confidence = 1.0 - (entropy / max_entropy)
+    confidence
+
+confidence = calc_confidence()
+regime_name = current_regime == 1 ? "BULL" : current_regime == 2 ? "BEAR" : current_regime == 3 ? "HIGH VOL" : current_regime == 4 ? "LOW VOL" : "CRISIS"
+
+// ============================================================================
+// REGIME FILTER LOGIC
+// ============================================================================
+
+regime_allows_long = (current_regime == 1 and allow_bull_regime) or (current_regime == 2 and allow_bear_regime) or (current_regime == 3 and allow_highvol_regime) or (current_regime == 4 and allow_lowvol_regime) or (current_regime == 5 and allow_crisis_regime)
+
+regime_allows_short = (current_regime == 1 and allow_bull_regime) or (current_regime == 2 and allow_bear_regime) or (current_regime == 3 and allow_highvol_regime) or (current_regime == 4 and allow_lowvol_regime) or (current_regime == 5 and allow_crisis_regime)
+
+regime_quality_ok = confidence > confidence_threshold and regime_stability > stability_threshold
+
+regime_filter_long = not use_regime_filter or (regime_allows_long and regime_quality_ok)
+regime_filter_short = not use_regime_filter or (regime_allows_short and regime_quality_ok)
+
+// ============================================================================
+// TRADING CONDITIONS (RSI of RSI + Optional Regime Filter)
+// ============================================================================
+
+can_go_long = trading_mode == "Long Only" or trading_mode == "Both"
+can_go_short = trading_mode == "Short Only" or trading_mode == "Both"
+
+// MirrorBot Entry Logic
+LongEntryCond = rsi2 < LongEntryLimit and can_go_long and regime_filter_long
+LongCloseCond = rsi2 > LongEntryTP
+
+ShortEntryCond = rsi2 > ShortEntryLimit and can_go_short and regime_filter_short
+ShortCloseCond = rsi2 < ShortEntryTP
+
+// ============================================================================
+// TRADE EXECUTION
+// ============================================================================
+
+if ShortEntryCond
+    strategy.entry("Short", strategy.short)
+if ShortCloseCond
+    strategy.close("Short")
+
+if LongEntryCond
+    strategy.entry("Long", strategy.long)
+if LongCloseCond
+    strategy.close("Long")
+
+// ============================================================================
+// VISUALIZATION
+// ============================================================================
+
+regime_color = current_regime == 1 ? color.new(color.green, 90) : current_regime == 2 ? color.new(color.red, 90) : current_regime == 3 ? color.new(color.orange, 90) : current_regime == 4 ? color.new(color.blue, 90) : color.new(color.purple, 90)
+bgcolor(show_regime_bg ? regime_color : na)
+
+// RSI of RSI Plot
+plot(rsi2, color=color.white, linewidth=2, title="RSI of RSI")
+hline(50, color=color.rgb(255, 255, 255, 53), linestyle=hline.style_dashed)
+hline(100, color=color.rgb(255, 255, 255, 72), linestyle=hline.style_dashed)
+hline(0, color=color.rgb(255, 255, 255, 72), linestyle=hline.style_dashed)
+
+BackGroundColor = rsi2 < 100 and rsi2 > 0 ? color.rgb(19, 50, 75, 63) : na
+bgcolor(BackGroundColor)
+
+// ============================================================================
+// INFORMATION TABLE
+// ============================================================================
+
+var table info_table = table.new(position.top_right, 2, 22, border_width=1, border_color=color.gray)
+
+if barstate.islast and show_info_table
+    table.cell(info_table, 0, 0, "MirrorBot Auto-Tune", bgcolor=color.new(color.gray, 70), text_color=color.white)
+    table.merge_cells(info_table, 0, 0, 1, 0)
+
+    table.cell(info_table, 0, 1, "Auto-Tune", bgcolor=color.new(color.gray, 90))
+    table.cell(info_table, 1, 1, enable_auto_tuning ? "ON" : "OFF", text_color=enable_auto_tuning ? color.green : color.red)
+
+    regime_color_solid = current_regime == 1 ? color.green : current_regime == 2 ? color.red : current_regime == 3 ? color.orange : current_regime == 4 ? color.blue : color.purple
+    table.cell(info_table, 0, 2, "Regime", bgcolor=color.new(color.gray, 90))
+    table.cell(info_table, 1, 2, regime_name, bgcolor=color.new(regime_color_solid, 80), text_color=color.white)
+
+    table.cell(info_table, 0, 3, "Filter Active", bgcolor=color.new(color.gray, 90))
+    table.cell(info_table, 1, 3, use_regime_filter ? "YES" : "NO", text_color=use_regime_filter ? color.green : color.gray)
+
+    table.cell(info_table, 0, 4, "Performance", bgcolor=color.new(color.gray, 70), text_color=color.white)
+    table.merge_cells(info_table, 0, 4, 1, 4)
+
+    table.cell(info_table, 0, 5, "Win Rate", bgcolor=color.new(color.gray, 90))
+    wr_color = win_rate > 0.55 ? color.green : win_rate > 0.45 ? color.orange : color.red
+    table.cell(info_table, 1, 5, str.tostring(win_rate * 100, "#.0") + "%", text_color=wr_color)
+
+    table.cell(info_table, 0, 6, "Avg P&L", bgcolor=color.new(color.gray, 90))
+    pnl_color = avg_pnl > 0 ? color.green : color.red
+    table.cell(info_table, 1, 6, str.tostring(avg_pnl, "#.2"), text_color=pnl_color)
+
+    table.cell(info_table, 0, 7, "Perf Score", bgcolor=color.new(color.gray, 90))
+    perf_color = performance_score > 0.60 ? color.green : performance_score > 0.45 ? color.orange : color.red
+    table.cell(info_table, 1, 7, str.tostring(performance_score * 100, "#.0") + "%", text_color=perf_color)
+
+    table.cell(info_table, 0, 8, "RSI of RSI", bgcolor=color.new(color.gray, 90))
+    rsi_color = rsi2 < 40 ? color.green : rsi2 > 60 ? color.red : color.gray
+    table.cell(info_table, 1, 8, str.tostring(rsi2, "#.1"), text_color=rsi_color)
+
+    table.cell(info_table, 0, 9, "Can Long", bgcolor=color.new(color.gray, 90))
+    table.cell(info_table, 1, 9, regime_filter_long ? "✓" : "✗", text_color=regime_filter_long ? color.green : color.red)
+
+    table.cell(info_table, 0, 10, "Can Short", bgcolor=color.new(color.gray, 90))
+    table.cell(info_table, 1, 10, regime_filter_short ? "✓" : "✗", text_color=regime_filter_short ? color.green : color.red)
+
+    if show_tuning_params
+        table.cell(info_table, 0, 11, "Adaptive Params", bgcolor=color.new(color.gray, 70), text_color=color.white)
+        table.merge_cells(info_table, 0, 11, 1, 11)
+
+        table.cell(info_table, 0, 12, "Conf Thresh", bgcolor=color.new(color.gray, 90))
+        table.cell(info_table, 1, 12, str.tostring(confidence_threshold, "#.2"))
+
+        table.cell(info_table, 0, 13, "Stab Thresh", bgcolor=color.new(color.gray, 90))
+        table.cell(info_table, 1, 13, str.tostring(stability_threshold, "#.2"))
+
+        table.cell(info_table, 0, 14, "CUSUM Thresh", bgcolor=color.new(color.gray, 90))
+        table.cell(info_table, 1, 14, str.tostring(cusum_threshold, "#.2"))
+
+        table.cell(info_table, 0, 15, "Min Duration", bgcolor=color.new(color.gray, 90))
+        table.cell(info_table, 1, 15, str.tostring(min_regime_duration))
+
+        table.cell(info_table, 0, 16, "Vol Fast", bgcolor=color.new(color.gray, 90))
+        table.cell(info_table, 1, 16, str.tostring(vol_lookback_fast))
+
+    table.cell(info_table, 0, 17, "Current State", bgcolor=color.new(color.gray, 70), text_color=color.white)
+    table.merge_cells(info_table, 0, 17, 1, 17)
+
+    table.cell(info_table, 0, 18, "Confidence", bgcolor=color.new(color.gray, 90))
+    conf_color = confidence > 0.70 ? color.green : confidence > 0.60 ? color.orange : color.red
+    table.cell(info_table, 1, 18, str.tostring(confidence * 100, "#.0") + "%", text_color=conf_color)
+
+    table.cell(info_table, 0, 19, "Stability", bgcolor=color.new(color.gray, 90))
+    table.cell(info_table, 1, 19, str.tostring(regime_stability * 100, "#.0") + "%")
+
+    table.cell(info_table, 0, 20, "GARCH Vol", bgcolor=color.new(color.gray, 90))
+    table.cell(info_table, 1, 20, str.tostring(garch_vol * 100, "#.1") + "%")
+
+    table.cell(info_table, 0, 21, "Probabilities", bgcolor=color.new(color.gray, 70), text_color=color.white)
+    table.merge_cells(info_table, 0, 21, 1, 21)
+
+// ============================================================================
+// ALERTS
+// ============================================================================
+
+alertcondition(LongEntryCond, title="MirrorBot Long Entry", message="RSI of RSI Long + Auto-Tuned Regime Filter OK")
+alertcondition(ShortEntryCond, title="MirrorBot Short Entry", message="RSI of RSI Short + Auto-Tuned Regime Filter OK")
+alertcondition(current_regime != current_regime[1], title="Regime Change", message="Market regime has changed - auto-tuning adjusting")
